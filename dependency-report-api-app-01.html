@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetScaler dependency report: api-app-01</title>
+<style>
+body { color: #1f2937; font-family: system-ui, sans-serif; line-height: 1.5; margin: 2rem auto; max-width: 72rem; padding: 0 1rem; }
+h1 { margin-bottom: 0.25rem; } h2 { border-bottom: 1px solid #d1d5db; margin-top: 2rem; padding-bottom: 0.25rem; }
+table { border-collapse: collapse; margin: 0.75rem 0; width: 100%; } th, td { border: 1px solid #d1d5db; padding: 0.5rem 0.75rem; text-align: left; vertical-align: top; }
+th { background: #f3f4f6; } code, pre { overflow-wrap: anywhere; white-space: pre-wrap; } .empty { color: #6b7280; font-style: italic; } .metadata { color: #4b5563; } .raw { margin: 0.75rem 0; } .raw summary { cursor: pointer; font-weight: 600; } .raw pre { background: #f9fafb; border: 1px solid #d1d5db; margin: 0.5rem 0; padding: 0.75rem; }
+</style>
+</head>
+<body>
+<h1>NetScaler server dependency report</h1>
+<p class="metadata">Config: <code>.\benchmark-netscaler-22000.conf</code></p>
+<h2>Server</h2>
+<p class="metadata">The backend server used as the starting point for the dependency walk.</p>
+<table><thead><tr><th>Name</th><th>Address</th></tr></thead><tbody>
+<tr><td>api-app-01</td><td>10.10.20.11</td></tr>
+</tbody></table>
+<details class="raw"><summary>Raw commands interpreted (1)</summary><pre>add server api-app-01 10.10.20.11</pre></details>
+<h2>Peer servers sharing a load-balancing vServer</h2>
+<p class="metadata">Other backend servers that share a discovered local load-balancing vServer with the selected server.</p>
+<table><thead><tr><th>Name</th><th>Address</th><th>Service</th><th>Shared LB vServer</th></tr></thead><tbody><tr><td>api-app-02</td><td>10.10.20.12</td><td>svc-api-02</td><td>lbv-api-prod</td></tr></tbody></table>
+<details class="raw"><summary>Raw commands interpreted (3)</summary><pre>add server api-app-02 10.10.20.12
+add service svc-api-02 api-app-02 SSL 443 -gslb NONE -maxClient 0 -maxReq 0 -cip DISABLED -usip NO -useproxyport YES -healthMonitor YES
+bind lb vserver lbv-api-prod svc-api-02 -weight 30</pre></details>
+<h2>Services</h2>
+<p class="metadata">Direct service objects that point to the selected backend server.</p>
+<table><thead><tr><th>Name</th><th>Protocol / port</th></tr></thead><tbody><tr><td>svc-api-01</td><td>SSL/443</td></tr></tbody></table>
+<details class="raw"><summary>Raw commands interpreted (1)</summary><pre>add service svc-api-01 api-app-01 SSL 443 -gslb NONE -maxClient 0 -maxReq 0 -cip DISABLED -usip NO -useproxyport YES -healthMonitor YES</pre></details>
+<h2>Service groups</h2>
+<p class="metadata">Load-balancing service groups that contain the selected backend server.</p>
+<table><thead><tr><th>Name</th><th>Member port</th></tr></thead><tbody><tr><td colspan="2" class="empty">(none)</td></tr></tbody></table>
+<p class="raw empty">Raw commands interpreted: (none)</p>
+<h2>Service-group SSL configuration</h2>
+<p class="metadata">TLS configuration applied to the selected server service groups.</p>
+<table><thead><tr><th>Configuration line</th></tr></thead><tbody><tr><td colspan="2" class="empty">(none)</td></tr></tbody></table>
+<p class="raw empty">Raw commands interpreted: (none)</p>
+<h2>Health monitors</h2>
+<p class="metadata">Health checks bound to the selected server services or service groups.</p>
+<table><thead><tr><th>Name</th><th>Type</th></tr></thead><tbody><tr><td>mon-https-health</td><td>HTTP</td></tr></tbody></table>
+<details class="raw"><summary>Raw commands interpreted (2)</summary><pre>add lb monitor mon-https-health HTTP -secure YES -destPort 443 -httpRequest &quot;GET /health HTTP/1.1\r\nHost: api.example.test\r\nConnection: close\r\n\r\n&quot; -respCode 200 -interval 10 -resTimeOut 3 -retries 2
+bind service svc-api-01 -monitorName mon-https-health</pre></details>
+<h2>Load-balancing vServers</h2>
+<p class="metadata">Local virtual IP endpoints that distribute traffic to the selected backend.</p>
+<table><thead><tr><th>Name</th><th>VIP</th><th>Settings</th></tr></thead><tbody><tr><td>lbv-api-prod</td><td>SSL 192.0.2.21:443</td><td>method=ROUNDROBIN, persistence=SOURCEIP</td></tr></tbody></table>
+<details class="raw"><summary>Raw commands interpreted (1)</summary><pre>add lb vserver lbv-api-prod SSL 192.0.2.21 443 -persistenceType SOURCEIP -timeout 15 -cltTimeout 180 -lbMethod ROUNDROBIN</pre></details>
+<h2>Content-switching vServers</h2>
+<p class="metadata">Front-end virtual servers that use policies to route requests to discovered load-balancing vServers.</p>
+<table><thead><tr><th>Name</th><th>VIP</th><th>Route</th></tr></thead><tbody><tr><td>csv-prod</td><td>SSL 192.0.2.20:443</td><td>policy=cspol-api-path, action=csact-api, target=lbv-api-prod</td></tr></tbody></table>
+<details class="raw"><summary>Raw commands interpreted (4)</summary><pre>add cs vserver csv-prod SSL 192.0.2.20 443 -cltTimeout 180
+bind cs vserver csv-prod -policyName cspol-api-path -priority 100
+add cs policy cspol-api-path -rule &quot;HTTP.REQ.URL.STARTSWITH(\&quot;/api/\&quot;)&quot; -action csact-api
+add cs action csact-api -targetLBVserver lbv-api-prod</pre></details>
+<h2>GSLB service-group members</h2>
+<p class="metadata">Global service endpoints correlated from discovered local load-balancing VIP and port pairs.</p>
+<table><thead><tr><th>GSLB service group</th><th>Member endpoint</th><th>Public endpoint</th><th>Local LB vServers</th></tr></thead><tbody><tr><td colspan="2" class="empty">(none)</td></tr></tbody></table>
+<p class="raw empty">Raw commands interpreted: (none)</p>
+<h2>GSLB service-group configuration</h2>
+<p class="metadata">Definitions and service types for the discovered global service groups.</p>
+<table><thead><tr><th>Name</th><th>Service type</th><th>Definition</th></tr></thead><tbody><tr><td colspan="2" class="empty">(none)</td></tr></tbody></table>
+<p class="raw empty">Raw commands interpreted: (none)</p>
+<h2>GSLB health monitors</h2>
+<p class="metadata">Health checks and monitor settings attached to discovered global service groups.</p>
+<table><thead><tr><th>Name</th><th>Type</th></tr></thead><tbody><tr><td colspan="2" class="empty">(none)</td></tr></tbody></table>
+<table><thead><tr><th>Monitor configuration</th></tr></thead><tbody><tr><td colspan="2" class="empty">(none)</td></tr></tbody></table>
+<p class="raw empty">Raw commands interpreted: (none)</p>
+<h2>GSLB vServers</h2>
+<p class="metadata">Global DNS-aware virtual servers that use the discovered GSLB service groups.</p>
+<table><thead><tr><th>Name</th><th>Service type</th><th>GSLB service group</th></tr></thead><tbody><tr><td colspan="2" class="empty">(none)</td></tr></tbody></table>
+<p class="raw empty">Raw commands interpreted: (none)</p>
+<h2>GSLB domains</h2>
+<p class="metadata">Domain names bound to discovered GSLB virtual servers.</p>
+<table><thead><tr><th>GSLB vServer</th><th>Domain name</th></tr></thead><tbody><tr><td colspan="2" class="empty">(none)</td></tr></tbody></table>
+<p class="raw empty">Raw commands interpreted: (none)</p>
+<h2>Certificate bindings</h2>
+<p class="metadata">Certificate-key bindings on discovered local and content-switching virtual servers.</p>
+<table><thead><tr><th>vServer</th><th>Certificate</th></tr></thead><tbody><tr><td>lbv-api-prod</td><td>cert-api-example-test</td></tr>
+<tr><td>csv-prod</td><td>cert-example-test</td></tr></tbody></table>
+<details class="raw"><summary>Raw commands interpreted (2)</summary><pre>bind ssl vserver lbv-api-prod -certkeyName cert-api-example-test
+bind ssl vserver csv-prod -certkeyName cert-example-test</pre></details>
+<h2>Relevant vServer bindings</h2>
+<p class="metadata">Additional bindings associated with discovered local and content-switching virtual servers.</p>
+<table><thead><tr><th>Binding</th></tr></thead><tbody><tr><td colspan="2"><code>bind lb vserver lbv-api-prod svc-api-01 -weight 70</code></td></tr>
+<tr><td colspan="2"><code>bind lb vserver lbv-api-prod svc-api-02 -weight 30</code></td></tr>
+<tr><td colspan="2"><code>bind lb vserver lbv-api-prod -policyName pol-add-hsts -priority 100 -gotoPriorityExpression END -type RESPONSE</code></td></tr>
+<tr><td colspan="2"><code>bind cs vserver csv-prod -policyName cspol-api-path -priority 100</code></td></tr>
+<tr><td colspan="2"><code>bind cs vserver csv-prod -policyName cspol-web-default -priority 1000</code></td></tr></tbody></table>
+<details class="raw"><summary>Raw commands interpreted (5)</summary><pre>bind lb vserver lbv-api-prod svc-api-01 -weight 70
+bind lb vserver lbv-api-prod svc-api-02 -weight 30
+bind lb vserver lbv-api-prod -policyName pol-add-hsts -priority 100 -gotoPriorityExpression END -type RESPONSE
+bind cs vserver csv-prod -policyName cspol-api-path -priority 100
+bind cs vserver csv-prod -policyName cspol-web-default -priority 1000</pre></details>
+<h2>Unprocessed lines for all discovered objects</h2>
+<p class="metadata">Related commands retained for inspection because this report does not interpret them.</p>
+<table><thead><tr><th>Configuration line</th></tr></thead><tbody><tr><td><code>add server api-app-02 10.10.20.12</code></td></tr>
+<tr><td><code>add service svc-api-02 api-app-02 SSL 443 -gslb NONE -maxClient 0 -maxReq 0 -cip DISABLED -usip NO -useproxyport YES -healthMonitor YES</code></td></tr>
+<tr><td><code>bind service svc-api-02 -monitorName mon-https-health</code></td></tr>
+<tr><td><code>add ssl certKey cert-example-test -cert &quot;/nsconfig/ssl/example.test.pem&quot; -key &quot;/nsconfig/ssl/example.test.key&quot;</code></td></tr>
+<tr><td><code>add ssl certKey cert-api-example-test -cert &quot;/nsconfig/ssl/api.example.test.pem&quot; -key &quot;/nsconfig/ssl/api.example.test.key&quot;</code></td></tr>
+<tr><td><code>bind ssl vserver lbv-api-prod -cipherName DEFAULT</code></td></tr>
+<tr><td><code>set ssl vserver lbv-api-prod -ssl3 DISABLED -tls1 DISABLED -tls11 DISABLED -tls12 ENABLED -tls13 ENABLED</code></td></tr>
+<tr><td><code>add cs action csact-api -targetLBVserver lbv-api-prod</code></td></tr>
+<tr><td><code>add cs policy cspol-api-path -rule &quot;HTTP.REQ.URL.STARTSWITH(\&quot;/api/\&quot;)&quot; -action csact-api</code></td></tr></tbody></table>
+</body>
+</html>

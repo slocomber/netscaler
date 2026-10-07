@@ -2,6 +2,9 @@
 .SYNOPSIS
 Finds the NetScaler objects that expose a backend server.
 
+.DESCRIPTION
+Renders at most 100 rows per report section by default. Use -MaxRowsPerSection to select a lower limit.
+
 .EXAMPLE
 .\Get-NetScalerServerDependency.ps1 -ConfigPath .\sample-netscaler.conf -ServerName api-app-01
 
@@ -12,7 +15,9 @@ Finds the NetScaler objects that expose a backend server.
 .\Get-NetScalerServerDependency.ps1 -ConfigPath C:\Exports\ns.conf -ServerName api-app-01 -AsObject
 
 .EXAMPLE
-.\Get-NetScalerServerDependency.ps1 -ConfigPath C:\Exports\ns.conf -ServerName api-app-01 -AsHtml > dependency-report.html
+.\Get-NetScalerServerDependency.ps1 -ConfigPath C:\Exports\ns.conf -ServerName api-app-01 -AsHtml
+
+Creates C:\Exports\dependency-report-api-app-01.html. Use -HtmlOutputPath to choose a different location.
 #>
 [CmdletBinding()]
 param(
@@ -28,7 +33,12 @@ param(
 
     [switch]$AsObject,
 
-    [switch]$AsHtml
+    [switch]$AsHtml,
+
+    [string]$HtmlOutputPath,
+
+    [ValidateRange(1, 100)]
+    [int]$MaxRowsPerSection = 100
 )
 
 Set-StrictMode -Version Latest
@@ -61,82 +71,81 @@ function Get-UniqueSorted {
     @($Items | Where-Object { $null -ne $_ -and $_ -ne '' } | Sort-Object -Unique)
 }
 
-function ConvertTo-NetScalerTextTable {
+function Add-NetScalerTextTable {
     param(
         [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
         [object]$Report,
 
-        [Parameter(Mandatory)]
-        [string]$Title,
-
-        [Parameter(Mandatory)]
-        [string]$Description,
-
+        [AllowEmptyCollection()]
         [object[]]$Rows,
 
-        [string[]]$Columns,
+        [Parameter(Mandatory)]
+        [object[]]$Columns,
 
-        [string[]]$RawCommands
+        [Parameter(Mandatory)]
+        [int]$MaxRows
     )
 
-    $Report.Add('')
-    $Report.Add($Title)
-    $Report.Add(('-' * $Title.Length))
-    $Report.Add($Description)
-
-    if (@($Rows).Count -eq 0) {
+    if ($Rows.Count -eq 0) {
         $Report.Add('  (none)')
-    }
-    else {
-        $table = $Rows | Format-Table -Property $Columns -AutoSize | Out-String -Width 240
-        foreach ($line in $table.TrimEnd().Split([Environment]::NewLine)) {
-            $Report.Add($line)
-        }
+        return
     }
 
-    $commands = @($RawCommands | Where-Object { $_ } | Sort-Object -Unique)
-    $Report.Add('Raw commands parsed:')
-    if ($commands.Count -eq 0) {
-        $Report.Add('  (none)')
+    $displayRows = @($Rows | Select-Object -First $MaxRows)
+    $table = $displayRows | Format-Table -Property $Columns -AutoSize | Out-String -Width 240
+    foreach ($line in $table.TrimEnd().Split([Environment]::NewLine)) {
+        $Report.Add($line)
     }
-    else {
-        foreach ($command in $commands) {
-            $Report.Add("  $command")
-        }
+
+    if ($Rows.Count -gt $MaxRows) {
+        $Report.Add("  (showing first $MaxRows of $($Rows.Count) rows)")
     }
 }
 
-function ConvertTo-NetScalerEnhancedTextReport {
+function Add-NetScalerBoundedLines {
     param(
         [Parameter(Mandatory)]
-        [pscustomobject]$Dependency,
+        [AllowEmptyCollection()]
+        [object]$Report,
+
+        [AllowEmptyCollection()]
+        [object[]]$Lines,
 
         [Parameter(Mandatory)]
-        [string]$SourceConfigPath
+        [int]$MaxRows
     )
 
-    $report = [System.Collections.Generic.List[string]]::new()
-    $report.Add('NetScaler server dependency report')
-    $report.Add(('=' * 34))
-    $report.Add("Config:  $SourceConfigPath")
+    if ($Lines.Count -eq 0) {
+        $Report.Add('  (none)')
+        return
+    }
 
-    ConvertTo-NetScalerTextTable -Report $report -Title 'Selected server' -Description 'The backend server used as the starting point for the dependency walk.' -Rows @($Dependency.Server | Select-Object Name, Address) -Columns Name, Address -RawCommands @($Dependency.Server.Line)
-    ConvertTo-NetScalerTextTable -Report $report -Title 'Peer servers' -Description 'Other backend servers sharing a discovered load-balancing vServer with the selected server.' -Rows @($Dependency.PeerServers | Select-Object Name, Address, Service, LoadBalancingVserver) -Columns Name, Address, Service, LoadBalancingVserver -RawCommands @($Dependency.PeerServers | ForEach-Object { $_.RawCommands })
-    ConvertTo-NetScalerTextTable -Report $report -Title 'Services' -Description 'Direct service objects that point at the selected backend server.' -Rows @($Dependency.Services | Select-Object Name, Protocol, Port) -Columns Name, Protocol, Port -RawCommands @($Dependency.Services | ForEach-Object { $_.Line })
-    ConvertTo-NetScalerTextTable -Report $report -Title 'Service groups' -Description 'Load-balancing service groups containing the selected backend server.' -Rows @($Dependency.ServiceGroups | Select-Object Name, Server, Port) -Columns Name, Server, Port -RawCommands @($Dependency.ServiceGroups | ForEach-Object { $_.Line })
-    ConvertTo-NetScalerTextTable -Report $report -Title 'Service-group SSL configuration' -Description 'TLS settings and bindings applied to the selected server service groups.' -Rows @($Dependency.ServiceGroupSslConfiguration | Select-Object ServiceGroup, Line) -Columns ServiceGroup, Line -RawCommands @($Dependency.ServiceGroupSslConfiguration | ForEach-Object { $_.Line })
-    ConvertTo-NetScalerTextTable -Report $report -Title 'Health monitors' -Description 'Health checks bound to the selected server services or service groups.' -Rows @($Dependency.Monitors | Select-Object Name, Type) -Columns Name, Type -RawCommands @($Dependency.Monitors | ForEach-Object { $_.Line })
-    ConvertTo-NetScalerTextTable -Report $report -Title 'Load-balancing vServers' -Description 'Local virtual IP endpoints that route traffic to the selected server.' -Rows @($Dependency.LoadBalancingVservers | Select-Object Name, Protocol, Address, Port, LoadMethod, Persistence) -Columns Name, Protocol, Address, Port, LoadMethod, Persistence -RawCommands @($Dependency.LoadBalancingVservers | ForEach-Object { $_.Line })
-    ConvertTo-NetScalerTextTable -Report $report -Title 'Content-switching vServers' -Description 'Content-switching front ends that route to discovered load-balancing vServers.' -Rows @($Dependency.ContentSwitchingVservers | Select-Object Name, Protocol, Address, Port, Policy, Action, TargetLBVserver) -Columns Name, Protocol, Address, Port, Policy, Action, TargetLBVserver -RawCommands @($Dependency.ContentSwitchingVservers | ForEach-Object { $_.Line })
-    ConvertTo-NetScalerTextTable -Report $report -Title 'GSLB service groups' -Description 'Global service groups reached through a discovered local LB vServer VIP and port.' -Rows @($Dependency.GslbServiceGroups | Select-Object Name, ServiceType) -Columns Name, ServiceType -RawCommands @($Dependency.GslbServiceGroups | ForEach-Object { $_.Line })
-    ConvertTo-NetScalerTextTable -Report $report -Title 'GSLB members' -Description 'Endpoints in the discovered global service groups, including any public NAT endpoint.' -Rows @($Dependency.GslbServiceGroupMembers | ForEach-Object { [pscustomobject]@{ Group = $_.GslbServiceGroup; Member = "$($_.Address):$($_.Port)"; PublicEndpoint = if ($_.PublicIp) { "$($_.PublicIp):$($_.PublicPort)" } else { '' }; LocalLBVservers = $_.DiscoveryLoadBalancingVservers -join ', ' } }) -Columns Group, Member, PublicEndpoint, LocalLBVservers -RawCommands @($Dependency.GslbServiceGroupMembers | ForEach-Object { $_.Line })
-    ConvertTo-NetScalerTextTable -Report $report -Title 'GSLB monitors' -Description 'Health checks and configuration applied to discovered GSLB service groups.' -Rows @($Dependency.GslbMonitors | Select-Object Name, Type) -Columns Name, Type -RawCommands @($Dependency.GslbMonitorConfiguration | ForEach-Object { $_.Line })
-    ConvertTo-NetScalerTextTable -Report $report -Title 'GSLB vServers and domains' -Description 'Global DNS-aware virtual servers and the domains they answer for.' -Rows @($Dependency.GslbVservers | Select-Object Name, ServiceType, ServiceGroup; $Dependency.GslbDomains | ForEach-Object { [pscustomobject]@{ Name = $_.Vserver; ServiceType = 'domain'; ServiceGroup = $_.Name } }) -Columns Name, ServiceType, ServiceGroup -RawCommands @($Dependency.GslbVservers | ForEach-Object { $_.Line; $_.BindingLine }; $Dependency.GslbDomains | ForEach-Object { $_.Line })
-    ConvertTo-NetScalerTextTable -Report $report -Title 'Certificates' -Description 'SSL certificate-key bindings on discovered local or content-switching vServers.' -Rows @($Dependency.Certificates | Select-Object Vserver, Certificate) -Columns Vserver, Certificate -RawCommands @($Dependency.Certificates | ForEach-Object { $_.Line })
-    ConvertTo-NetScalerTextTable -Report $report -Title 'Relevant vServer bindings' -Description 'Additional bindings associated with the discovered local and content-switching vServers.' -Rows @($Dependency.VserverBindings | ForEach-Object { [pscustomobject]@{ Command = $_ } }) -Columns Command -RawCommands @($Dependency.VserverBindings)
-    ConvertTo-NetScalerTextTable -Report $report -Title 'Unprocessed related lines' -Description 'Related commands retained for inspection because they are not interpreted by this report.' -Rows @($Dependency.UnprocessedRelevantLines | ForEach-Object { [pscustomobject]@{ Command = $_ } }) -Columns Command -RawCommands @($Dependency.UnprocessedRelevantLines)
+    foreach ($line in @($Lines | Select-Object -First $MaxRows)) {
+        $Report.Add("  $line")
+    }
 
-    $report -join [Environment]::NewLine
+    if ($Lines.Count -gt $MaxRows) {
+        $Report.Add("  (showing first $MaxRows of $($Lines.Count) rows)")
+    }
+}
+
+function Add-NetScalerRawCommands {
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [object]$Report,
+
+        [AllowEmptyCollection()]
+        [object[]]$Commands,
+
+        [Parameter(Mandatory)]
+        [int]$MaxRows
+    )
+
+    $uniqueCommands = @($Commands | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+    $Report.Add('Raw commands interpreted:')
+    Add-NetScalerBoundedLines -Report $Report -Lines $uniqueCommands -MaxRows $MaxRows
 }
 
 function ConvertTo-NetScalerReport {
@@ -145,7 +154,10 @@ function ConvertTo-NetScalerReport {
         [pscustomobject]$Dependency,
 
         [Parameter(Mandatory)]
-        [string]$SourceConfigPath
+        [string]$SourceConfigPath,
+
+        [Parameter(Mandatory)]
+        [int]$MaxRowsPerSection
     )
 
     $report = [System.Collections.Generic.List[string]]::new()
@@ -153,172 +165,124 @@ function ConvertTo-NetScalerReport {
     $report.Add(('=' * 34))
     $report.Add("Config:  $SourceConfigPath")
     $report.Add("Server:  $($Dependency.Server.Name) ($($Dependency.Server.Address))")
+    Add-NetScalerRawCommands -Report $report -Commands @($Dependency.Server.Line) -MaxRows $MaxRowsPerSection
 
     $report.Add('')
     $report.Add('Peer servers sharing a load-balancing vServer')
     $report.Add('------------------------------------------------')
-    if ($Dependency.PeerServers.Count -eq 0) {
-        $report.Add('  (none)')
-    }
-    foreach ($peerServer in $Dependency.PeerServers) {
-        $report.Add("  $($peerServer.Name) ($($peerServer.Address)) via $($peerServer.Service) on $($peerServer.LoadBalancingVserver)")
-    }
+    $report.Add('Other backend servers that share a discovered local load-balancing vServer with the selected server.')
+    Add-NetScalerTextTable -Report $report -Rows @($Dependency.PeerServers) -Columns Name, Address, Service, LoadBalancingVserver -MaxRows $MaxRowsPerSection
+    Add-NetScalerRawCommands -Report $report -Commands @($Dependency.PeerServers | ForEach-Object { $_.RawCommands }) -MaxRows $MaxRowsPerSection
 
     $report.Add('')
     $report.Add('Services')
     $report.Add('--------')
-    if ($Dependency.Services.Count -eq 0) {
-        $report.Add('  (none)')
-    }
-    foreach ($service in $Dependency.Services) {
-        $report.Add("  $($service.Name): $($service.Protocol)/$($service.Port)")
-    }
+    $report.Add('Direct service objects that point to the selected backend server.')
+    Add-NetScalerTextTable -Report $report -Rows @($Dependency.Services) -Columns Name, Protocol, Port -MaxRows $MaxRowsPerSection
+    Add-NetScalerRawCommands -Report $report -Commands @($Dependency.Services | ForEach-Object { $_.Line }) -MaxRows $MaxRowsPerSection
 
     $report.Add('')
     $report.Add('Service groups')
     $report.Add('--------------')
-    if ($Dependency.ServiceGroups.Count -eq 0) {
-        $report.Add('  (none)')
-    }
-    foreach ($serviceGroup in $Dependency.ServiceGroups) {
-        $port = if ($null -eq $serviceGroup.Port) { '' } else { ":$($serviceGroup.Port)" }
-        $report.Add("  $($serviceGroup.Name)$port")
-    }
+    $report.Add('Load-balancing service groups that contain the selected backend server.')
+    $serviceGroupRows = @($Dependency.ServiceGroups | Select-Object Name, Server, Port)
+    Add-NetScalerTextTable -Report $report -Rows $serviceGroupRows -Columns Name, Server, Port -MaxRows $MaxRowsPerSection
+    Add-NetScalerRawCommands -Report $report -Commands @($Dependency.ServiceGroups | ForEach-Object { $_.Line }) -MaxRows $MaxRowsPerSection
 
     $report.Add('')
     $report.Add('Service-group SSL configuration')
     $report.Add('-------------------------------')
-    if ($Dependency.ServiceGroupSslConfiguration.Count -eq 0) {
-        $report.Add('  (none)')
-    }
-    foreach ($sslConfiguration in $Dependency.ServiceGroupSslConfiguration) {
-        $report.Add("  $($sslConfiguration.Line)")
-    }
+    $report.Add('TLS configuration applied to the selected server service groups.')
+    Add-NetScalerBoundedLines -Report $report -Lines @($Dependency.ServiceGroupSslConfiguration | ForEach-Object { $_.Line }) -MaxRows $MaxRowsPerSection
+    Add-NetScalerRawCommands -Report $report -Commands @($Dependency.ServiceGroupSslConfiguration | ForEach-Object { $_.Line }) -MaxRows $MaxRowsPerSection
 
     $report.Add('')
     $report.Add('Health monitors')
     $report.Add('---------------')
-    if ($Dependency.Monitors.Count -eq 0) {
-        $report.Add('  (none)')
-    }
-    foreach ($monitor in $Dependency.Monitors) {
-        $report.Add("  $($monitor.Name) ($($monitor.Type))")
-    }
+    $report.Add('Health checks bound to the selected server services or service groups.')
+    Add-NetScalerTextTable -Report $report -Rows @($Dependency.Monitors) -Columns Name, Type -MaxRows $MaxRowsPerSection
+    Add-NetScalerRawCommands -Report $report -Commands @($Dependency.Monitors | ForEach-Object { $_.Line }; $Dependency.MonitorBindingLines) -MaxRows $MaxRowsPerSection
 
     $report.Add('')
     $report.Add('Load-balancing vServers')
     $report.Add('------------------------')
-    if ($Dependency.LoadBalancingVservers.Count -eq 0) {
-        $report.Add('  (none)')
-    }
-    foreach ($vserver in $Dependency.LoadBalancingVservers) {
-        $settings = @()
-        if ($vserver.LoadMethod) {
-            $settings += "method=$($vserver.LoadMethod)"
-        }
-        if ($vserver.Persistence) {
-            $settings += "persistence=$($vserver.Persistence)"
-        }
-        $settingsText = if ($settings.Count -gt 0) { " [$($settings -join ', ')]" } else { '' }
-        $report.Add("  $($vserver.Name): $($vserver.Protocol) $($vserver.Address):$($vserver.Port)$settingsText")
-    }
+    $report.Add('Local virtual IP endpoints that distribute traffic to the selected backend.')
+    Add-NetScalerTextTable -Report $report -Rows @($Dependency.LoadBalancingVservers) -Columns Name, Protocol, Address, Port, LoadMethod, Persistence -MaxRows $MaxRowsPerSection
+    Add-NetScalerRawCommands -Report $report -Commands @($Dependency.LoadBalancingVservers | ForEach-Object { $_.Line }) -MaxRows $MaxRowsPerSection
 
     $report.Add('')
     $report.Add('Content-switching vServers')
     $report.Add('--------------------------')
-    if ($Dependency.ContentSwitchingVservers.Count -eq 0) {
-        $report.Add('  (none)')
-    }
-    foreach ($vserver in $Dependency.ContentSwitchingVservers) {
-        $report.Add("  $($vserver.Name): $($vserver.Protocol) $($vserver.Address):$($vserver.Port)")
-        $report.Add("    policy=$($vserver.Policy), action=$($vserver.Action), target=$($vserver.TargetLBVserver)")
-    }
+    $report.Add('Front-end virtual servers that use policies to route requests to discovered load-balancing vServers.')
+    Add-NetScalerTextTable -Report $report -Rows @($Dependency.ContentSwitchingVservers) -Columns Name, Protocol, Address, Port, Policy, Action, TargetLBVserver -MaxRows $MaxRowsPerSection
+    Add-NetScalerRawCommands -Report $report -Commands @($Dependency.ContentSwitchingVservers | ForEach-Object { $_.RawCommands }) -MaxRows $MaxRowsPerSection
 
     $report.Add('')
     $report.Add('GSLB service-group members')
     $report.Add('--------------------------')
-    if ($Dependency.GslbServiceGroupMembers.Count -eq 0) {
-        $report.Add('  (none)')
-    }
-    foreach ($member in $Dependency.GslbServiceGroupMembers) {
-        $publicEndpoint = if ($member.PublicIp) { " public=$($member.PublicIp):$($member.PublicPort)" } else { '' }
-        $discoverySource = $member.DiscoveryLoadBalancingVservers -join ', '
-        $report.Add("  $($member.GslbServiceGroup): $($member.Address):$($member.Port)$publicEndpoint [discovered from LB vServer: $discoverySource]")
-    }
+    $report.Add('Global service endpoints correlated from discovered local load-balancing VIP and port pairs.')
+    $gslbMemberRows = @($Dependency.GslbServiceGroupMembers | ForEach-Object {
+            [pscustomobject]@{
+                ServiceGroup = $_.GslbServiceGroup
+                Address = $_.Address
+                Port = $_.Port
+                PublicIp = $_.PublicIp
+                PublicPort = $_.PublicPort
+                LocalLBVservers = $_.DiscoveryLoadBalancingVservers -join ', '
+            }
+        })
+    Add-NetScalerTextTable -Report $report -Rows $gslbMemberRows -Columns ServiceGroup, Address, Port, PublicIp, PublicPort, LocalLBVservers -MaxRows $MaxRowsPerSection
+    Add-NetScalerRawCommands -Report $report -Commands @($Dependency.GslbServiceGroupMembers | ForEach-Object { $_.Line }) -MaxRows $MaxRowsPerSection
 
     $report.Add('')
     $report.Add('GSLB service-group configuration')
     $report.Add('--------------------------------')
-    if ($Dependency.GslbServiceGroups.Count -eq 0) {
-        $report.Add('  (none)')
-    }
-    foreach ($serviceGroup in $Dependency.GslbServiceGroups) {
-        $report.Add("  $($serviceGroup.Name) ($($serviceGroup.ServiceType))")
-    }
+    $report.Add('Definitions and service types for the discovered global service groups.')
+    Add-NetScalerTextTable -Report $report -Rows @($Dependency.GslbServiceGroups) -Columns Name, ServiceType -MaxRows $MaxRowsPerSection
+    Add-NetScalerRawCommands -Report $report -Commands @($Dependency.GslbServiceGroups | ForEach-Object { $_.Line }) -MaxRows $MaxRowsPerSection
 
     $report.Add('')
     $report.Add('GSLB health monitors')
     $report.Add('--------------------')
-    if ($Dependency.GslbMonitors.Count -eq 0) {
-        $report.Add('  (none)')
-    }
-    foreach ($monitor in $Dependency.GslbMonitors) {
-        $report.Add("  $($monitor.Name) ($($monitor.Type))")
-    }
-    foreach ($configuration in $Dependency.GslbMonitorConfiguration) {
-        $report.Add("  $($configuration.Line)")
-    }
+    $report.Add('Health checks and monitor settings attached to discovered global service groups.')
+    Add-NetScalerTextTable -Report $report -Rows @($Dependency.GslbMonitors) -Columns Name, Type -MaxRows $MaxRowsPerSection
+    $report.Add('GSLB monitor configuration:')
+    Add-NetScalerBoundedLines -Report $report -Lines @($Dependency.GslbMonitorConfiguration | ForEach-Object { $_.Line }) -MaxRows $MaxRowsPerSection
+    Add-NetScalerRawCommands -Report $report -Commands @($Dependency.GslbMonitorConfiguration | ForEach-Object { $_.Line }; $Dependency.GslbMonitorBindingLines) -MaxRows $MaxRowsPerSection
 
     $report.Add('')
     $report.Add('GSLB vServers')
     $report.Add('-------------')
-    if ($Dependency.GslbVservers.Count -eq 0) {
-        $report.Add('  (none)')
-    }
-    foreach ($vserver in $Dependency.GslbVservers) {
-        $serviceType = if ($vserver.ServiceType) { " ($($vserver.ServiceType))" } else { '' }
-        $report.Add("  $($vserver.Name)$serviceType -> $($vserver.ServiceGroup)")
-    }
+    $report.Add('Global DNS-aware virtual servers that use the discovered GSLB service groups.')
+    Add-NetScalerTextTable -Report $report -Rows @($Dependency.GslbVservers) -Columns Name, ServiceType, ServiceGroup -MaxRows $MaxRowsPerSection
+    Add-NetScalerRawCommands -Report $report -Commands @($Dependency.GslbVservers | ForEach-Object { $_.Line; $_.BindingLine }) -MaxRows $MaxRowsPerSection
 
     $report.Add('')
     $report.Add('GSLB domains')
     $report.Add('------------')
-    if ($Dependency.GslbDomains.Count -eq 0) {
-        $report.Add('  (none)')
-    }
-    foreach ($domain in $Dependency.GslbDomains) {
-        $report.Add("  $($domain.Vserver): $($domain.Name)")
-    }
+    $report.Add('Domain names bound to discovered GSLB virtual servers.')
+    Add-NetScalerTextTable -Report $report -Rows @($Dependency.GslbDomains) -Columns Vserver, Name -MaxRows $MaxRowsPerSection
+    Add-NetScalerRawCommands -Report $report -Commands @($Dependency.GslbDomains | ForEach-Object { $_.Line }) -MaxRows $MaxRowsPerSection
 
     $report.Add('')
     $report.Add('Certificate bindings')
     $report.Add('--------------------')
-    if ($Dependency.Certificates.Count -eq 0) {
-        $report.Add('  (none)')
-    }
-    foreach ($certificate in $Dependency.Certificates) {
-        $report.Add("  $($certificate.Vserver): $($certificate.Certificate)")
-    }
+    $report.Add('Certificate-key bindings on discovered local and content-switching virtual servers.')
+    Add-NetScalerTextTable -Report $report -Rows @($Dependency.Certificates) -Columns Vserver, Certificate -MaxRows $MaxRowsPerSection
+    Add-NetScalerRawCommands -Report $report -Commands @($Dependency.Certificates | ForEach-Object { $_.Line }) -MaxRows $MaxRowsPerSection
 
     $report.Add('')
     $report.Add('Relevant vServer bindings')
     $report.Add('-------------------------')
-    if ($Dependency.VserverBindings.Count -eq 0) {
-        $report.Add('  (none)')
-    }
-    foreach ($binding in $Dependency.VserverBindings) {
-        $report.Add("  $binding")
-    }
+    $report.Add('Additional bindings associated with discovered local and content-switching virtual servers.')
+    Add-NetScalerBoundedLines -Report $report -Lines @($Dependency.VserverBindings) -MaxRows $MaxRowsPerSection
+    Add-NetScalerRawCommands -Report $report -Commands @($Dependency.VserverBindings) -MaxRows $MaxRowsPerSection
 
     $report.Add('')
     $report.Add('Unprocessed lines for all discovered objects')
     $report.Add('--------------------------------------------')
-    if ($Dependency.UnprocessedRelevantLines.Count -eq 0) {
-        $report.Add('  (none)')
-    }
-    foreach ($line in $Dependency.UnprocessedRelevantLines) {
-        $report.Add("  $line")
-    }
+    $report.Add('Related commands retained for inspection because this report does not interpret them.')
+    Add-NetScalerBoundedLines -Report $report -Lines @($Dependency.UnprocessedRelevantLines) -MaxRows $MaxRowsPerSection
 
     $report -join [Environment]::NewLine
 }
@@ -329,7 +293,10 @@ function ConvertTo-NetScalerHtmlReport {
         [pscustomobject]$Dependency,
 
         [Parameter(Mandatory)]
-        [string]$SourceConfigPath
+        [string]$SourceConfigPath,
+
+        [Parameter(Mandatory)]
+        [int]$MaxRowsPerSection
     )
 
     function ConvertTo-HtmlText {
@@ -352,21 +319,34 @@ function ConvertTo-NetScalerHtmlReport {
             return '<tr><td colspan="2" class="empty">(none)</td></tr>'
         }
 
-        ($Items | ForEach-Object -Process { & $Row $_ }) -join [Environment]::NewLine
-    }
-
-    function ConvertTo-HtmlCommandBlock {
-        param([string[]]$Commands)
-
-        $parsedCommands = @($Commands | Where-Object { $_ } | Sort-Object -Unique)
-        if ($parsedCommands.Count -eq 0) {
-            return '<details class="commands"><summary>Raw commands parsed</summary><p class="empty">(none)</p></details>'
+        $rows = @($Items | Select-Object -First $MaxRowsPerSection | ForEach-Object -Process { & $Row $_ })
+        if ($Items.Count -gt $MaxRowsPerSection) {
+            $rows += "<tr><td colspan=""2"" class=""empty"">(showing first $MaxRowsPerSection of $($Items.Count) rows)</td></tr>"
         }
 
-        $encodedCommands = ($parsedCommands | ForEach-Object {
-                [System.Net.WebUtility]::HtmlEncode($_)
-            }) -join [Environment]::NewLine
-        "<details class=""commands""><summary>Raw commands parsed</summary><pre>$encodedCommands</pre></details>"
+        $rows -join [Environment]::NewLine
+    }
+
+    function ConvertTo-HtmlRawCommands {
+        param(
+            [AllowEmptyCollection()]
+            [object[]]$Commands
+        )
+
+        $uniqueCommands = @($Commands | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+        if ($uniqueCommands.Count -eq 0) {
+            return '<p class="raw empty">Raw commands interpreted: (none)</p>'
+        }
+
+        $displayCommands = @($uniqueCommands | Select-Object -First $MaxRowsPerSection | ForEach-Object { ConvertTo-HtmlText $_ })
+        $truncationNotice = if ($uniqueCommands.Count -gt $MaxRowsPerSection) {
+            "<p class=""empty"">(showing first $MaxRowsPerSection of $($uniqueCommands.Count) commands)</p>"
+        }
+        else {
+            ''
+        }
+
+        "<details class=""raw""><summary>Raw commands interpreted ($($uniqueCommands.Count))</summary><pre>$($displayCommands -join [Environment]::NewLine)</pre>$truncationNotice</details>"
     }
 
     $peerServerRows = ConvertTo-HtmlRows -Items @($Dependency.PeerServers) -Row {
@@ -427,7 +407,7 @@ function ConvertTo-NetScalerHtmlReport {
     }
     $gslbMonitorConfigurationRows = ConvertTo-HtmlRows -Items @($Dependency.GslbMonitorConfiguration) -Row {
         param($configuration)
-        "<tr><td colspan=""2""><code>$(ConvertTo-HtmlText $configuration.Line)</code></td></tr>"
+        "<tr><td><code>$(ConvertTo-HtmlText $configuration.Line)</code></td></tr>"
     }
     $certificateRows = ConvertTo-HtmlRows -Items @($Dependency.Certificates) -Row {
         param($certificate)
@@ -441,22 +421,21 @@ function ConvertTo-NetScalerHtmlReport {
         param($line)
         "<tr><td><code>$(ConvertTo-HtmlText $line)</code></td></tr>"
     }
-    $serverCommands = ConvertTo-HtmlCommandBlock @($Dependency.Server.Line)
-    $peerCommands = ConvertTo-HtmlCommandBlock @($Dependency.PeerServers | ForEach-Object { $_.RawCommands })
-    $serviceCommands = ConvertTo-HtmlCommandBlock @($Dependency.Services | ForEach-Object { $_.Line })
-    $serviceGroupCommands = ConvertTo-HtmlCommandBlock @($Dependency.ServiceGroups | ForEach-Object { $_.Line })
-    $serviceGroupSslCommands = ConvertTo-HtmlCommandBlock @($Dependency.ServiceGroupSslConfiguration | ForEach-Object { $_.Line })
-    $monitorCommands = ConvertTo-HtmlCommandBlock @($Dependency.Monitors | ForEach-Object { $_.Line })
-    $lbVserverCommands = ConvertTo-HtmlCommandBlock @($Dependency.LoadBalancingVservers | ForEach-Object { $_.Line })
-    $csVserverCommands = ConvertTo-HtmlCommandBlock @($Dependency.ContentSwitchingVservers | ForEach-Object { $_.Line })
-    $gslbMemberCommands = ConvertTo-HtmlCommandBlock @($Dependency.GslbServiceGroupMembers | ForEach-Object { $_.Line })
-    $gslbServiceGroupCommands = ConvertTo-HtmlCommandBlock @($Dependency.GslbServiceGroups | ForEach-Object { $_.Line })
-    $gslbMonitorCommands = ConvertTo-HtmlCommandBlock @($Dependency.GslbMonitorConfiguration | ForEach-Object { $_.Line })
-    $gslbVserverCommands = ConvertTo-HtmlCommandBlock @($Dependency.GslbVservers | ForEach-Object { $_.Line; $_.BindingLine })
-    $gslbDomainCommands = ConvertTo-HtmlCommandBlock @($Dependency.GslbDomains | ForEach-Object { $_.Line })
-    $certificateCommands = ConvertTo-HtmlCommandBlock @($Dependency.Certificates | ForEach-Object { $_.Line })
-    $bindingCommands = ConvertTo-HtmlCommandBlock @($Dependency.VserverBindings)
-    $unprocessedCommands = ConvertTo-HtmlCommandBlock @($Dependency.UnprocessedRelevantLines)
+    $serverRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.Server.Line)
+    $peerServerRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.PeerServers | ForEach-Object { $_.RawCommands })
+    $serviceRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.Services | ForEach-Object { $_.Line })
+    $serviceGroupRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.ServiceGroups | ForEach-Object { $_.Line })
+    $serviceGroupSslRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.ServiceGroupSslConfiguration | ForEach-Object { $_.Line })
+    $monitorRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.Monitors | ForEach-Object { $_.Line }; $Dependency.MonitorBindingLines)
+    $lbVserverRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.LoadBalancingVservers | ForEach-Object { $_.Line })
+    $csVserverRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.ContentSwitchingVservers | ForEach-Object { $_.RawCommands })
+    $gslbMemberRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.GslbServiceGroupMembers | ForEach-Object { $_.Line })
+    $gslbServiceGroupRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.GslbServiceGroups | ForEach-Object { $_.Line })
+    $gslbMonitorRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.GslbMonitorConfiguration | ForEach-Object { $_.Line }; $Dependency.GslbMonitorBindingLines)
+    $gslbVserverRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.GslbVservers | ForEach-Object { $_.Line; $_.BindingLine })
+    $gslbDomainRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.GslbDomains | ForEach-Object { $_.Line })
+    $certificateRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.Certificates | ForEach-Object { $_.Line })
+    $bindingRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.VserverBindings)
 
 @"
 <!doctype html>
@@ -469,79 +448,78 @@ function ConvertTo-NetScalerHtmlReport {
 body { color: #1f2937; font-family: system-ui, sans-serif; line-height: 1.5; margin: 2rem auto; max-width: 72rem; padding: 0 1rem; }
 h1 { margin-bottom: 0.25rem; } h2 { border-bottom: 1px solid #d1d5db; margin-top: 2rem; padding-bottom: 0.25rem; }
 table { border-collapse: collapse; margin: 0.75rem 0; width: 100%; } th, td { border: 1px solid #d1d5db; padding: 0.5rem 0.75rem; text-align: left; vertical-align: top; }
-th { background: #f3f4f6; } code { overflow-wrap: anywhere; } .empty { color: #6b7280; font-style: italic; } .metadata, .description { color: #4b5563; } details.commands { margin: 0.5rem 0 1rem; } details.commands summary { cursor: pointer; font-weight: 600; } details.commands pre { overflow-x: auto; white-space: pre-wrap; }
+th { background: #f3f4f6; } code, pre { overflow-wrap: anywhere; white-space: pre-wrap; } .empty { color: #6b7280; font-style: italic; } .metadata { color: #4b5563; } .raw { margin: 0.75rem 0; } .raw summary { cursor: pointer; font-weight: 600; } .raw pre { background: #f9fafb; border: 1px solid #d1d5db; margin: 0.5rem 0; padding: 0.75rem; }
 </style>
 </head>
 <body>
 <h1>NetScaler server dependency report</h1>
 <p class="metadata">Config: <code>$(ConvertTo-HtmlText $SourceConfigPath)</code></p>
 <h2>Server</h2>
-<p class="description">The backend server used as the starting point for the dependency walk.</p>
+<p class="metadata">The backend server used as the starting point for the dependency walk.</p>
 <table><thead><tr><th>Name</th><th>Address</th></tr></thead><tbody>
 <tr><td>$(ConvertTo-HtmlText $Dependency.Server.Name)</td><td>$(ConvertTo-HtmlText $Dependency.Server.Address)</td></tr>
 </tbody></table>
-$serverCommands
+$serverRawCommands
 <h2>Peer servers sharing a load-balancing vServer</h2>
-<p class="description">Other backends that share a discovered local load-balancing vServer.</p>
+<p class="metadata">Other backend servers that share a discovered local load-balancing vServer with the selected server.</p>
 <table><thead><tr><th>Name</th><th>Address</th><th>Service</th><th>Shared LB vServer</th></tr></thead><tbody>$peerServerRows</tbody></table>
-$peerCommands
+$peerServerRawCommands
 <h2>Services</h2>
-<p class="description">Direct service objects that point to the selected backend server.</p>
+<p class="metadata">Direct service objects that point to the selected backend server.</p>
 <table><thead><tr><th>Name</th><th>Protocol / port</th></tr></thead><tbody>$serviceRows</tbody></table>
-$serviceCommands
+$serviceRawCommands
 <h2>Service groups</h2>
-<p class="description">Load-balancing service groups that contain the selected backend server.</p>
+<p class="metadata">Load-balancing service groups that contain the selected backend server.</p>
 <table><thead><tr><th>Name</th><th>Member port</th></tr></thead><tbody>$serviceGroupRows</tbody></table>
-$serviceGroupCommands
+$serviceGroupRawCommands
 <h2>Service-group SSL configuration</h2>
-<p class="description">TLS configuration applied to the selected server service groups.</p>
+<p class="metadata">TLS configuration applied to the selected server service groups.</p>
 <table><thead><tr><th>Configuration line</th></tr></thead><tbody>$serviceGroupSslRows</tbody></table>
-$serviceGroupSslCommands
+$serviceGroupSslRawCommands
 <h2>Health monitors</h2>
-<p class="description">Health checks attached to the selected server services or service groups.</p>
+<p class="metadata">Health checks bound to the selected server services or service groups.</p>
 <table><thead><tr><th>Name</th><th>Type</th></tr></thead><tbody>$monitorRows</tbody></table>
-$monitorCommands
+$monitorRawCommands
 <h2>Load-balancing vServers</h2>
-<p class="description">Local virtual IP endpoints that distribute traffic to the selected backend.</p>
+<p class="metadata">Local virtual IP endpoints that distribute traffic to the selected backend.</p>
 <table><thead><tr><th>Name</th><th>VIP</th><th>Settings</th></tr></thead><tbody>$lbVserverRows</tbody></table>
-$lbVserverCommands
+$lbVserverRawCommands
 <h2>Content-switching vServers</h2>
-<p class="description">Front-end virtual servers that use policies to route requests to discovered load-balancing vServers.</p>
+<p class="metadata">Front-end virtual servers that use policies to route requests to discovered load-balancing vServers.</p>
 <table><thead><tr><th>Name</th><th>VIP</th><th>Route</th></tr></thead><tbody>$csVserverRows</tbody></table>
-$csVserverCommands
+$csVserverRawCommands
 <h2>GSLB service-group members</h2>
-<p class="description">Global service endpoints correlated from discovered local LB VIP and port pairs.</p>
+<p class="metadata">Global service endpoints correlated from discovered local load-balancing VIP and port pairs.</p>
 <table><thead><tr><th>GSLB service group</th><th>Member endpoint</th><th>Public endpoint</th><th>Local LB vServers</th></tr></thead><tbody>$gslbMemberRows</tbody></table>
-$gslbMemberCommands
+$gslbMemberRawCommands
 <h2>GSLB service-group configuration</h2>
-<p class="description">Definitions and service types for the discovered global service groups.</p>
+<p class="metadata">Definitions and service types for the discovered global service groups.</p>
 <table><thead><tr><th>Name</th><th>Service type</th><th>Definition</th></tr></thead><tbody>$gslbServiceGroupRows</tbody></table>
-$gslbServiceGroupCommands
+$gslbServiceGroupRawCommands
 <h2>GSLB health monitors</h2>
-<p class="description">Health checks and monitor settings attached to discovered global service groups.</p>
+<p class="metadata">Health checks and monitor settings attached to discovered global service groups.</p>
 <table><thead><tr><th>Name</th><th>Type</th></tr></thead><tbody>$gslbMonitorRows</tbody></table>
-<table><thead><tr><th>Monitor configuration lines</th></tr></thead><tbody>$gslbMonitorConfigurationRows</tbody></table>
-$gslbMonitorCommands
+<table><thead><tr><th>Monitor configuration</th></tr></thead><tbody>$gslbMonitorConfigurationRows</tbody></table>
+$gslbMonitorRawCommands
 <h2>GSLB vServers</h2>
-<p class="description">Global DNS-aware virtual servers that use the discovered GSLB service groups.</p>
+<p class="metadata">Global DNS-aware virtual servers that use the discovered GSLB service groups.</p>
 <table><thead><tr><th>Name</th><th>Service type</th><th>GSLB service group</th></tr></thead><tbody>$gslbVserverRows</tbody></table>
-$gslbVserverCommands
+$gslbVserverRawCommands
 <h2>GSLB domains</h2>
-<p class="description">Domain names bound to discovered GSLB virtual servers.</p>
+<p class="metadata">Domain names bound to discovered GSLB virtual servers.</p>
 <table><thead><tr><th>GSLB vServer</th><th>Domain name</th></tr></thead><tbody>$gslbDomainRows</tbody></table>
-$gslbDomainCommands
+$gslbDomainRawCommands
 <h2>Certificate bindings</h2>
-<p class="description">Certificate-key bindings on discovered local and content-switching virtual servers.</p>
+<p class="metadata">Certificate-key bindings on discovered local and content-switching virtual servers.</p>
 <table><thead><tr><th>vServer</th><th>Certificate</th></tr></thead><tbody>$certificateRows</tbody></table>
-$certificateCommands
+$certificateRawCommands
 <h2>Relevant vServer bindings</h2>
-<p class="description">Additional bindings associated with the discovered local and content-switching virtual servers.</p>
+<p class="metadata">Additional bindings associated with discovered local and content-switching virtual servers.</p>
 <table><thead><tr><th>Binding</th></tr></thead><tbody>$bindingRows</tbody></table>
-$bindingCommands
+$bindingRawCommands
 <h2>Unprocessed lines for all discovered objects</h2>
-<p class="description">Related commands kept for inspection because this report does not interpret them.</p>
+<p class="metadata">Related commands retained for inspection because this report does not interpret them.</p>
 <table><thead><tr><th>Configuration line</th></tr></thead><tbody>$unprocessedLineRows</tbody></table>
-$unprocessedCommands
 </body>
 </html>
 "@
@@ -568,8 +546,10 @@ if (@($server).Count -eq 0) {
     throw "Server '$ServerName' was not found in '$ConfigPath'."
 }
 $serverAddresses = @{}
+$serverDefinitionLines = @{}
 foreach ($configuredServer in $allServers) {
     $serverAddresses[$configuredServer.Name] = $configuredServer.Address
+    $serverDefinitionLines[$configuredServer.Name] = $configuredServer.Line
 }
 
 $allServices = foreach ($line in $lines) {
@@ -781,13 +761,13 @@ $gslbMonitors = foreach ($line in $lines) {
             Line = $line
         }
     }
-    $gslbMonitorConfiguration = foreach ($line in $lines) {
-        $match = [regex]::Match($line, '^\s*(?:add|set)\s+lb\s+monitor\s+(?<Name>\S+)', 'IgnoreCase')
-        if ($match.Success -and $match.Groups['Name'].Value -in $gslbMonitorNames) {
-            [pscustomobject]@{
-                Name = $match.Groups['Name'].Value
-                Line = $line
-            }
+}
+$gslbMonitorConfiguration = foreach ($line in $lines) {
+    $match = [regex]::Match($line, '^\s*(?:add|set)\s+lb\s+monitor\s+(?<Name>\S+)', 'IgnoreCase')
+    if ($match.Success -and $match.Groups['Name'].Value -in $gslbMonitorNames) {
+        [pscustomobject]@{
+            Name = $match.Groups['Name'].Value
+            Line = $line
         }
     }
 }
@@ -830,13 +810,12 @@ $peerServers = @(
                 Where-Object { $_.Name -ieq $serviceGroupBinding.Groups['Group'].Value -and $_.Server -ine $server[0].Name } |
                 ForEach-Object {
                     $member = $_
-                    $peerServer = $allServers | Where-Object { $_.Name -ieq $member.Server } | Select-Object -First 1
                     [pscustomobject]@{
                         Name                 = $member.Server
                         Address              = $serverAddresses[$member.Server]
                         Service              = $member.Name
                         LoadBalancingVserver = $serviceGroupBinding.Groups['Vserver'].Value
-                        RawCommands          = @($peerServer.Line, $member.Line, $line)
+                        RawCommands          = @($serverDefinitionLines[$member.Server], $member.Line, $line)
                     }
                 }
         }
@@ -847,13 +826,12 @@ $peerServers = @(
                 Where-Object { $_.Name -ieq $positionalServiceGroupBinding.Groups['Group'].Value -and $_.Server -ine $server[0].Name } |
                 ForEach-Object {
                     $member = $_
-                    $peerServer = $allServers | Where-Object { $_.Name -ieq $member.Server } | Select-Object -First 1
                     [pscustomobject]@{
                         Name                 = $member.Server
                         Address              = $serverAddresses[$member.Server]
                         Service              = $member.Name
                         LoadBalancingVserver = $positionalServiceGroupBinding.Groups['Vserver'].Value
-                        RawCommands          = @($peerServer.Line, $member.Line, $line)
+                        RawCommands          = @($serverDefinitionLines[$member.Server], $member.Line, $line)
                     }
                 }
         }
@@ -861,18 +839,22 @@ $peerServers = @(
 ) | Sort-Object Name, Service, LoadBalancingVserver -Unique
 
 $csActionTargets = @{}
+$csActionLines = @{}
 foreach ($line in $lines) {
     $match = [regex]::Match($line, '^\s*add\s+cs\s+action\s+(?<Action>\S+)\s+-targetLBVserver\s+(?<Vserver>\S+)', 'IgnoreCase')
     if ($match.Success) {
         $csActionTargets[$match.Groups['Action'].Value] = $match.Groups['Vserver'].Value
+        $csActionLines[$match.Groups['Action'].Value] = $line
     }
 }
 
 $csPolicyActions = @{}
+$csPolicyLines = @{}
 foreach ($line in $lines) {
     $match = [regex]::Match($line, '^\s*add\s+cs\s+policy\s+(?<Policy>\S+)\s+.*?-action\s+(?<Action>\S+)', 'IgnoreCase')
     if ($match.Success -and $csActionTargets.ContainsKey($match.Groups['Action'].Value) -and $csActionTargets[$match.Groups['Action'].Value] -in $lbVserverNames) {
         $csPolicyActions[$match.Groups['Policy'].Value] = $match.Groups['Action'].Value
+        $csPolicyLines[$match.Groups['Policy'].Value] = $line
     }
 }
 
@@ -902,6 +884,7 @@ $contentSwitchingVservers = foreach ($line in $lines) {
             Action         = $action
             TargetLBVserver = $targetLBVserver
             Line           = $csVserverLine
+            RawCommands    = @($csVserverLine, $line, $csPolicyLines[$match.Groups['Policy'].Value], $csActionLines[$action])
         }
     }
 }
@@ -951,11 +934,6 @@ foreach ($item in @(
 }
 foreach ($binding in $vserverBindings) {
     [void]$processedLines.Add($binding)
-}
-foreach ($peerServer in $peerServers) {
-    foreach ($command in $peerServer.RawCommands) {
-        [void]$processedLines.Add($command)
-    }
 }
 foreach ($binding in $monitorBindingLines) {
     [void]$processedLines.Add($binding)
@@ -1007,7 +985,9 @@ $result = [pscustomobject]@{
     GslbDomains              = @($gslbDomains)
     GslbMonitors             = @($gslbMonitors)
     GslbMonitorConfiguration = @($gslbMonitorConfiguration)
+    GslbMonitorBindingLines  = @($gslbMonitorBindingLines)
     Monitors                = @($monitors)
+    MonitorBindingLines      = @($monitorBindingLines)
     LoadBalancingVservers   = @($lbVservers)
     ContentSwitchingVservers = @($contentSwitchingVservers)
     Certificates            = @($certificateBindings)
@@ -1027,8 +1007,16 @@ elseif ($AsObject) {
     $result
 }
 elseif ($AsHtml) {
-    ConvertTo-NetScalerHtmlReport -Dependency $result -SourceConfigPath $ConfigPath
+    if ([string]::IsNullOrWhiteSpace($HtmlOutputPath)) {
+        $resolvedConfigPath = (Resolve-Path -LiteralPath $ConfigPath).Path
+        $safeServerName = $ServerName -replace '[<>:"/\\|?*]', '_'
+        $HtmlOutputPath = Join-Path -Path (Split-Path -Parent $resolvedConfigPath) -ChildPath "dependency-report-$safeServerName.html"
+    }
+
+    ConvertTo-NetScalerHtmlReport -Dependency $result -SourceConfigPath $ConfigPath -MaxRowsPerSection $MaxRowsPerSection |
+        Set-Content -LiteralPath $HtmlOutputPath -Encoding utf8
+    "HTML report saved to: $HtmlOutputPath"
 }
 else {
-    ConvertTo-NetScalerEnhancedTextReport -Dependency $result -SourceConfigPath $ConfigPath
+    ConvertTo-NetScalerReport -Dependency $result -SourceConfigPath $ConfigPath -MaxRowsPerSection $MaxRowsPerSection
 }
