@@ -96,6 +96,12 @@ function Get-UniqueSorted {
     @($Items | Where-Object { $null -ne $_ -and $_ -ne '' } | Sort-Object -Unique)
 }
 
+function Test-NetScalerDisabled {
+    param([AllowNull()][string]$State)
+
+    $State -ieq 'DISABLED'
+}
+
 function Add-NetScalerTextTable {
     param(
         [Parameter(Mandatory)]
@@ -382,16 +388,19 @@ function ConvertTo-NetScalerHtmlReport {
     }
     $serviceRows = ConvertTo-HtmlRows -Items @($Dependency.Services) -Row {
         param($service)
-        "<tr><td>$(ConvertTo-HtmlText $service.Name)</td><td>$(ConvertTo-HtmlText $service.Protocol)</td><td>$(ConvertTo-HtmlText $service.Port)</td></tr>"
+        $rowClass = if ($service.IsDisabled) { ' class="disabled"' } else { '' }
+        "<tr$rowClass><td>$(ConvertTo-HtmlText $service.Name)</td><td>$(ConvertTo-HtmlText $service.Protocol)</td><td>$(ConvertTo-HtmlText $service.Port)</td></tr>"
     }
     $serviceGroupRows = ConvertTo-HtmlRows -Items @($Dependency.ServiceGroups) -Row {
         param($serviceGroup)
         $port = if ($null -eq $serviceGroup.Port) { '' } else { $serviceGroup.Port }
-        "<tr><td>$(ConvertTo-HtmlText $serviceGroup.Name)</td><td>$(ConvertTo-HtmlText $port)</td><td>$(ConvertTo-HtmlText $serviceGroup.State)</td></tr>"
+        $rowClass = if ($serviceGroup.IsDisabled) { ' class="disabled"' } else { '' }
+        "<tr$rowClass><td>$(ConvertTo-HtmlText $serviceGroup.Name)</td><td>$(ConvertTo-HtmlText $port)</td><td>$(ConvertTo-HtmlText $serviceGroup.State)</td></tr>"
     }
     $serviceGroupSslRows = ConvertTo-HtmlRows -Items @($Dependency.ServiceGroupSslConfiguration) -Row {
         param($sslConfiguration)
-        "<tr><td>$(ConvertTo-HtmlText $sslConfiguration.ServiceGroup)</td><td>$(ConvertTo-HtmlText $sslConfiguration.Command)</td><td>$(ConvertTo-HtmlText $sslConfiguration.Purpose)</td><td>$(ConvertTo-HtmlText $sslConfiguration.Setting)</td><td>$(ConvertTo-HtmlText $sslConfiguration.Value)</td></tr>"
+        $rowClass = if ($sslConfiguration.IsDisabled) { ' class="disabled"' } else { '' }
+        "<tr$rowClass><td>$(ConvertTo-HtmlText $sslConfiguration.ServiceGroup)</td><td>$(ConvertTo-HtmlText $sslConfiguration.Command)</td><td>$(ConvertTo-HtmlText $sslConfiguration.Purpose)</td><td>$(ConvertTo-HtmlText $sslConfiguration.Setting)</td><td>$(ConvertTo-HtmlText $sslConfiguration.Value)</td></tr>"
     }
     $monitorRows = ConvertTo-HtmlRows -Items @($Dependency.Monitors) -Row {
         param($monitor)
@@ -399,32 +408,39 @@ function ConvertTo-NetScalerHtmlReport {
     }
     $lbVserverRows = ConvertTo-HtmlRows -Items @($Dependency.LoadBalancingVservers) -Row {
         param($vserver)
-        "<tr><td>$(ConvertTo-HtmlText $vserver.Name)</td><td>$(ConvertTo-HtmlText $vserver.Protocol)</td><td>$(ConvertTo-HtmlText $vserver.Address)</td><td>$(ConvertTo-HtmlText $vserver.Port)</td></tr>"
+        $rowClass = if ($vserver.IsDisabled) { ' class="disabled"' } else { '' }
+        "<tr$rowClass><td>$(ConvertTo-HtmlText $vserver.Name)</td><td>$(ConvertTo-HtmlText $vserver.Protocol)</td><td>$(ConvertTo-HtmlText $vserver.Address)</td><td>$(ConvertTo-HtmlText $vserver.Port)</td></tr>"
     }
     $lbVserverConfigurationRows = ConvertTo-HtmlRows -Items @($Dependency.LoadBalancingVserverConfiguration) -Row {
         param($configuration)
-        "<tr><td>$(ConvertTo-HtmlText $configuration.Vserver)</td><td>$(ConvertTo-HtmlText $configuration.Command)</td><td>$(ConvertTo-HtmlText $configuration.Purpose)</td><td>$(ConvertTo-HtmlText $configuration.Setting)</td><td>$(ConvertTo-HtmlText $configuration.Value)</td></tr>"
+        $rowClass = if ($configuration.IsDisabled) { ' class="disabled"' } else { '' }
+        "<tr$rowClass><td>$(ConvertTo-HtmlText $configuration.Vserver)</td><td>$(ConvertTo-HtmlText $configuration.Command)</td><td>$(ConvertTo-HtmlText $configuration.Purpose)</td><td>$(ConvertTo-HtmlText $configuration.Setting)</td><td>$(ConvertTo-HtmlText $configuration.Value)</td></tr>"
     }
     $csVserverRows = ConvertTo-HtmlRows -Items @($Dependency.ContentSwitchingVservers) -Row {
         param($vserver)
-        "<tr><td>$(ConvertTo-HtmlText $vserver.Name)</td><td>$(ConvertTo-HtmlText $vserver.Protocol)</td><td>$(ConvertTo-HtmlText $vserver.Address)</td><td>$(ConvertTo-HtmlText $vserver.Port)</td><td>$(ConvertTo-HtmlText $vserver.Policy)</td><td>$(ConvertTo-HtmlText $vserver.Action)</td><td>$(ConvertTo-HtmlText $vserver.TargetLBVserver)</td></tr>"
+        $rowClass = if ($vserver.IsDisabled) { ' class="disabled"' } else { '' }
+        "<tr$rowClass><td>$(ConvertTo-HtmlText $vserver.Name)</td><td>$(ConvertTo-HtmlText $vserver.Protocol)</td><td>$(ConvertTo-HtmlText $vserver.Address)</td><td>$(ConvertTo-HtmlText $vserver.Port)</td><td>$(ConvertTo-HtmlText $vserver.Policy)</td><td>$(ConvertTo-HtmlText $vserver.Action)</td><td>$(ConvertTo-HtmlText $vserver.TargetLBVserver)</td></tr>"
     }
     $gslbMemberRows = ConvertTo-HtmlRows -Items @($Dependency.GslbServiceGroupMembers) -Row {
         param($member)
         $publicEndpoint = if ($member.PublicIp -and $member.PublicPort) { "$($member.PublicIp):$($member.PublicPort)" } elseif ($member.PublicIp) { $member.PublicIp } else { '' }
-        "<tr><td>$(ConvertTo-HtmlText $member.GslbServiceGroup)</td><td>$(ConvertTo-HtmlText "$($member.Address):$($member.Port)")</td><td>$(ConvertTo-HtmlText $publicEndpoint)</td><td>$(ConvertTo-HtmlText ($member.DiscoveryLoadBalancingVservers -join ', '))</td></tr>"
+        $rowClass = if ($member.IsDisabled) { ' class="disabled"' } else { '' }
+        "<tr$rowClass><td>$(ConvertTo-HtmlText $member.GslbServiceGroup)</td><td>$(ConvertTo-HtmlText "$($member.Address):$($member.Port)")</td><td>$(ConvertTo-HtmlText $publicEndpoint)</td><td>$(ConvertTo-HtmlText ($member.DiscoveryLoadBalancingVservers -join ', '))</td></tr>"
     }
     $gslbServiceGroupRows = ConvertTo-HtmlRows -Items @($Dependency.GslbServiceGroups) -Row {
         param($serviceGroup)
-        "<tr><td>$(ConvertTo-HtmlText $serviceGroup.Name)</td><td>$(ConvertTo-HtmlText $serviceGroup.ServiceType)</td></tr>"
+        $rowClass = if ($serviceGroup.IsDisabled) { ' class="disabled"' } else { '' }
+        "<tr$rowClass><td>$(ConvertTo-HtmlText $serviceGroup.Name)</td><td>$(ConvertTo-HtmlText $serviceGroup.ServiceType)</td></tr>"
     }
     $gslbVserverRows = ConvertTo-HtmlRows -Items @($Dependency.GslbVservers) -Row {
         param($vserver)
-        "<tr><td>$(ConvertTo-HtmlText $vserver.Name)</td><td>$(ConvertTo-HtmlText $vserver.ServiceType)</td><td>$(ConvertTo-HtmlText $vserver.ServiceGroup)</td></tr>"
+        $rowClass = if ($vserver.IsDisabled) { ' class="disabled"' } else { '' }
+        "<tr$rowClass><td>$(ConvertTo-HtmlText $vserver.Name)</td><td>$(ConvertTo-HtmlText $vserver.ServiceType)</td><td>$(ConvertTo-HtmlText $vserver.ServiceGroup)</td></tr>"
     }
     $gslbDomainRows = ConvertTo-HtmlRows -Items @($Dependency.GslbDomains) -Row {
         param($domain)
-        "<tr><td>$(ConvertTo-HtmlText $domain.Vserver)</td><td>$(ConvertTo-HtmlText $domain.Name)</td></tr>"
+        $rowClass = if ($domain.IsDisabled) { ' class="disabled"' } else { '' }
+        "<tr$rowClass><td>$(ConvertTo-HtmlText $domain.Vserver)</td><td>$(ConvertTo-HtmlText $domain.Name)</td></tr>"
     }
     $gslbMonitorRows = ConvertTo-HtmlRows -Items @($Dependency.GslbMonitors) -Row {
         param($monitor)
@@ -436,7 +452,8 @@ function ConvertTo-NetScalerHtmlReport {
     }
     $certificateRows = ConvertTo-HtmlRows -Items @($Dependency.Certificates) -Row {
         param($certificate)
-        "<tr><td>$(ConvertTo-HtmlText $certificate.Vserver)</td><td>$(ConvertTo-HtmlText $certificate.Certificate)</td></tr>"
+        $rowClass = if ($certificate.IsDisabled) { ' class="disabled"' } else { '' }
+        "<tr$rowClass><td>$(ConvertTo-HtmlText $certificate.Vserver)</td><td>$(ConvertTo-HtmlText $certificate.Certificate)</td></tr>"
     }
     $bindingRows = ConvertTo-HtmlRows -Items @($Dependency.VserverBindings) -Row {
         param($binding)
@@ -473,7 +490,7 @@ function ConvertTo-NetScalerHtmlReport {
 body { color: #1f2937; font-family: system-ui, sans-serif; line-height: 1.5; margin: 2rem auto; max-width: 72rem; padding: 0 1rem; }
 h1 { margin-bottom: 0.25rem; } h2 { border-bottom: 1px solid #d1d5db; margin-top: 2rem; padding-bottom: 0.25rem; }
 table { border-collapse: collapse; margin: 0.75rem 0; width: 100%; } th, td { border: 1px solid #d1d5db; padding: 0.5rem 0.75rem; text-align: left; vertical-align: top; }
-th { background: #f3f4f6; } code, pre { overflow-wrap: anywhere; white-space: pre-wrap; } .empty { color: #6b7280; font-style: italic; } .metadata { color: #4b5563; } .raw { margin: 0.75rem 0; } .raw summary { cursor: pointer; font-weight: 600; } .raw pre { background: #f9fafb; border: 1px solid #d1d5db; margin: 0.5rem 0; padding: 0.75rem; }
+th { background: #f3f4f6; } code, pre { overflow-wrap: anywhere; white-space: pre-wrap; } .empty { color: #6b7280; font-style: italic; } .metadata { color: #4b5563; } .raw { margin: 0.75rem 0; } .raw summary { cursor: pointer; font-weight: 600; } .raw pre { background: #f9fafb; border: 1px solid #d1d5db; margin: 0.5rem 0; padding: 0.75rem; } tr.disabled td { background: #f3f4f6; color: #6b7280; } tr.disabled code { color: #6b7280; }
 </style>
 </head>
 <body>
@@ -586,6 +603,8 @@ $allServices = foreach ($line in $lines) {
             Server   = $match.Groups['Server'].Value
             Protocol = $match.Groups['Protocol'].Value
             Port     = [int]$match.Groups['Port'].Value
+            State    = Get-NetScalerOption -Line $line -Name 'state'
+            IsDisabled = Test-NetScalerDisabled (Get-NetScalerOption -Line $line -Name 'state')
             Line     = $line
         }
     }
@@ -600,6 +619,7 @@ $allServiceGroupMembers = foreach ($line in $lines) {
             Server = $match.Groups['Server'].Value
             Port = if ($match.Groups['Port'].Success) { [int]$match.Groups['Port'].Value } else { $null }
             State = Get-NetScalerOption -Line $line -Name 'state'
+            IsDisabled = Test-NetScalerDisabled (Get-NetScalerOption -Line $line -Name 'state')
             Line = $line
         }
     }
@@ -608,6 +628,12 @@ $serviceGroupMembers = @($allServiceGroupMembers | Where-Object { $_.Server -ieq
 
 $serviceNames = Get-UniqueSorted @($services | ForEach-Object { $_.Name })
 $serviceGroupNames = Get-UniqueSorted @($serviceGroupMembers | ForEach-Object { $_.Name })
+$disabledServiceGroupNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+foreach ($serviceGroupMember in $serviceGroupMembers) {
+    if ($serviceGroupMember.IsDisabled) {
+        [void]$disabledServiceGroupNames.Add($serviceGroupMember.Name)
+    }
+}
 
 $serviceGroupSslConfiguration = foreach ($line in $lines) {
     $serviceGroupDefinition = [regex]::Match($line, '^\s*add\s+serviceGroup\s+(?<Group>\S+)\s+(?<ServiceType>\S+)', 'IgnoreCase')
@@ -618,6 +644,7 @@ $serviceGroupSslConfiguration = foreach ($line in $lines) {
             Purpose      = 'Defines the service group and its service type.'
             Setting      = 'serviceType'
             Value        = $serviceGroupDefinition.Groups['ServiceType'].Value
+            IsDisabled   = $disabledServiceGroupNames.Contains($serviceGroupDefinition.Groups['Group'].Value)
             Line         = $line
         }
         continue
@@ -637,6 +664,7 @@ $serviceGroupSslConfiguration = foreach ($line in $lines) {
                 }
                 Setting      = $option.Name
                 Value        = $option.Value
+                IsDisabled   = $disabledServiceGroupNames.Contains($sslConfiguration.Groups['Group'].Value)
                 Line         = $line
             }
         }
@@ -720,6 +748,8 @@ $lbVservers = foreach ($line in $lines) {
             Port       = [int]$match.Groups['Port'].Value
             Persistence = Get-NetScalerOption -Line $line -Name 'persistenceType'
             LoadMethod = Get-NetScalerOption -Line $line -Name 'lbMethod'
+            State      = Get-NetScalerOption -Line $line -Name 'state'
+            IsDisabled = Test-NetScalerDisabled (Get-NetScalerOption -Line $line -Name 'state')
             Line       = $line
         }
     }
@@ -733,6 +763,7 @@ $lbVserverConfiguration = @(
                 Purpose = 'Creates the vServer with the listed option.'
                 Setting = $option.Name
                 Value   = $option.Value
+                IsDisabled = $false
                 Line    = $vserver.Line
             }
         }
@@ -748,12 +779,28 @@ $lbVserverConfiguration = @(
                     Purpose = 'Updates a vServer option.'
                     Setting = $option.Name
                     Value   = $option.Value
+                    IsDisabled = $false
                     Line    = $line
                 }
             }
         }
     }
 )
+$lbVserversByName = @{}
+foreach ($vserver in $lbVservers) {
+    $lbVserversByName[$vserver.Name] = $vserver
+}
+foreach ($configuration in $lbVserverConfiguration) {
+    if ($configuration.Setting -ieq 'state') {
+        $lbVserversByName[$configuration.Vserver].State = $configuration.Value
+    }
+}
+foreach ($vserver in $lbVservers) {
+    $vserver.IsDisabled = Test-NetScalerDisabled $vserver.State
+}
+foreach ($configuration in $lbVserverConfiguration) {
+    $configuration.IsDisabled = $lbVserversByName[$configuration.Vserver].IsDisabled
+}
 $lbVserversByEndpoint = @{}
 foreach ($vserver in $lbVservers) {
     $endpointKey = "$($vserver.Address)|$($vserver.Port)"
@@ -790,9 +837,15 @@ $gslbServiceGroups = foreach ($line in $lines) {
         [pscustomobject]@{
             Name        = $match.Groups['Name'].Value
             ServiceType = $match.Groups['ServiceType'].Value
+            State       = Get-NetScalerOption -Line $line -Name 'state'
+            IsDisabled  = Test-NetScalerDisabled (Get-NetScalerOption -Line $line -Name 'state')
             Line        = $line
         }
     }
+}
+$gslbServiceGroupsByName = @{}
+foreach ($serviceGroup in $gslbServiceGroups) {
+    $gslbServiceGroupsByName[$serviceGroup.Name] = $serviceGroup
 }
 
 $gslbServiceGroupMembers = foreach ($line in $lines) {
@@ -805,6 +858,8 @@ $gslbServiceGroupMembers = foreach ($line in $lines) {
             Port                            = [int]$match.Groups['Port'].Value
             PublicIp                        = Get-NetScalerOption -Line $line -Name 'publicIP'
             PublicPort                      = Get-NetScalerOption -Line $line -Name 'publicPort'
+            State                            = Get-NetScalerOption -Line $line -Name 'state'
+            IsDisabled                       = (Test-NetScalerDisabled (Get-NetScalerOption -Line $line -Name 'state')) -or $gslbServiceGroupsByName[$match.Groups['Group'].Value].IsDisabled
             DiscoveryLoadBalancingVservers  = if ($lbVserversByEndpoint.ContainsKey($endpointKey)) {
                 Get-UniqueSorted @($lbVserversByEndpoint[$endpointKey])
             }
@@ -832,16 +887,23 @@ $gslbVservers = foreach ($binding in $gslbVserverBindings) {
         ServiceGroup = $binding.ServiceGroup
         BindingLine = $binding.BindingLine
         Line = $definitionLine
+        State = if ($definitionLine) { Get-NetScalerOption -Line $definitionLine -Name 'state' } else { $null }
+        IsDisabled = if ($definitionLine) { Test-NetScalerDisabled (Get-NetScalerOption -Line $definitionLine -Name 'state') } else { $false }
     }
 }
 
 $gslbVserverNames = Get-UniqueSorted @($gslbVservers | ForEach-Object { $_.Name })
+$gslbVserversByName = @{}
+foreach ($vserver in $gslbVservers) {
+    $gslbVserversByName[$vserver.Name] = $vserver
+}
 $gslbDomains = foreach ($line in $lines) {
     $match = [regex]::Match($line, '^\s*bind\s+gslb\s+vserver\s+(?<Vserver>\S+)\s+-domainName\s+(?<Domain>\S+)', 'IgnoreCase')
     if ($match.Success -and $match.Groups['Vserver'].Value -in $gslbVserverNames) {
         [pscustomobject]@{
             Vserver = $match.Groups['Vserver'].Value
             Name    = $match.Groups['Domain'].Value
+            IsDisabled = $gslbVserversByName[$match.Groups['Vserver'].Value].IsDisabled
             Line    = $line
         }
     }
@@ -1001,6 +1063,8 @@ $contentSwitchingVservers = foreach ($line in $lines) {
             Action         = $action
             TargetLBVserver = $targetLBVserver
             Line           = $csVserverLine
+            State          = Get-NetScalerOption -Line $csVserverLine -Name 'state'
+            IsDisabled     = Test-NetScalerDisabled (Get-NetScalerOption -Line $csVserverLine -Name 'state')
             RawCommands    = @($csVserverLine, $line, $csPolicyLines[$match.Groups['Policy'].Value], $csActionLines[$action])
         }
     }
@@ -1010,6 +1074,10 @@ $vserverNames = Get-UniqueSorted @(
     $lbVservers | ForEach-Object { $_.Name }
     $contentSwitchingVservers | ForEach-Object { $_.Name }
 )
+$vserversByName = @{}
+foreach ($vserver in @($lbVservers) + @($contentSwitchingVservers)) {
+    $vserversByName[$vserver.Name] = $vserver
+}
 $vserverBindings = foreach ($line in $lines) {
     $match = [regex]::Match($line, '^\s*bind\s+(?:lb|cs)\s+vserver\s+(?<Vserver>\S+)', 'IgnoreCase')
     if ($match.Success -and $match.Groups['Vserver'].Value -in $vserverNames) {
@@ -1023,6 +1091,7 @@ $certificateBindings = foreach ($line in $lines) {
         [pscustomobject]@{
             Vserver     = $match.Groups['Vserver'].Value
             Certificate = $match.Groups['Certificate'].Value
+            IsDisabled  = $vserversByName[$match.Groups['Vserver'].Value].IsDisabled
             Line        = $line
         }
     }
