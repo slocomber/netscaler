@@ -108,6 +108,16 @@ function ConvertTo-NetScalerReport {
     }
 
     $report.Add('')
+    $report.Add('Service-group SSL configuration')
+    $report.Add('-------------------------------')
+    if ($Dependency.ServiceGroupSslConfiguration.Count -eq 0) {
+        $report.Add('  (none)')
+    }
+    foreach ($sslConfiguration in $Dependency.ServiceGroupSslConfiguration) {
+        $report.Add("  $($sslConfiguration.Line)")
+    }
+
+    $report.Add('')
     $report.Add('Health monitors')
     $report.Add('---------------')
     if ($Dependency.Monitors.Count -eq 0) {
@@ -166,6 +176,16 @@ function ConvertTo-NetScalerReport {
         $report.Add("  $binding")
     }
 
+    $report.Add('')
+    $report.Add('Related unprocessed configuration lines')
+    $report.Add('---------------------------------------')
+    if ($Dependency.UnprocessedRelevantLines.Count -eq 0) {
+        $report.Add('  (none)')
+    }
+    foreach ($line in $Dependency.UnprocessedRelevantLines) {
+        $report.Add("  $line")
+    }
+
     $report -join [Environment]::NewLine
 }
 
@@ -214,6 +234,10 @@ function ConvertTo-NetScalerHtmlReport {
         $port = if ($null -eq $serviceGroup.Port) { '' } else { ":$($serviceGroup.Port)" }
         "<tr><td>$(ConvertTo-HtmlText $serviceGroup.Name)</td><td>$(ConvertTo-HtmlText $port)</td></tr>"
     }
+    $serviceGroupSslRows = ConvertTo-HtmlRows -Items @($Dependency.ServiceGroupSslConfiguration) -Row {
+        param($sslConfiguration)
+        "<tr><td><code>$(ConvertTo-HtmlText $sslConfiguration.Line)</code></td></tr>"
+    }
     $monitorRows = ConvertTo-HtmlRows -Items @($Dependency.Monitors) -Row {
         param($monitor)
         "<tr><td>$(ConvertTo-HtmlText $monitor.Name)</td><td>$(ConvertTo-HtmlText $monitor.Type)</td></tr>"
@@ -239,6 +263,10 @@ function ConvertTo-NetScalerHtmlReport {
     $bindingRows = ConvertTo-HtmlRows -Items @($Dependency.VserverBindings) -Row {
         param($binding)
         "<tr><td colspan=""2""><code>$(ConvertTo-HtmlText $binding)</code></td></tr>"
+    }
+    $unprocessedLineRows = ConvertTo-HtmlRows -Items @($Dependency.UnprocessedRelevantLines) -Row {
+        param($line)
+        "<tr><td><code>$(ConvertTo-HtmlText $line)</code></td></tr>"
     }
 
 @"
@@ -268,6 +296,8 @@ th { background: #f3f4f6; } code { overflow-wrap: anywhere; } .empty { color: #6
 <table><thead><tr><th>Name</th><th>Protocol / port</th></tr></thead><tbody>$serviceRows</tbody></table>
 <h2>Service groups</h2>
 <table><thead><tr><th>Name</th><th>Member port</th></tr></thead><tbody>$serviceGroupRows</tbody></table>
+<h2>Service-group SSL configuration</h2>
+<table><thead><tr><th>Configuration line</th></tr></thead><tbody>$serviceGroupSslRows</tbody></table>
 <h2>Health monitors</h2>
 <table><thead><tr><th>Name</th><th>Type</th></tr></thead><tbody>$monitorRows</tbody></table>
 <h2>Load-balancing vServers</h2>
@@ -278,6 +308,8 @@ th { background: #f3f4f6; } code { overflow-wrap: anywhere; } .empty { color: #6
 <table><thead><tr><th>vServer</th><th>Certificate</th></tr></thead><tbody>$certificateRows</tbody></table>
 <h2>Relevant vServer bindings</h2>
 <table><thead><tr><th>Binding</th></tr></thead><tbody>$bindingRows</tbody></table>
+<h2>Related unprocessed configuration lines</h2>
+<table><thead><tr><th>Configuration line</th></tr></thead><tbody>$unprocessedLineRows</tbody></table>
 </body>
 </html>
 "@
@@ -302,6 +334,10 @@ $allServers = foreach ($line in $lines) {
 $server = @($allServers | Where-Object { $_.Name -ieq $ServerName })
 if (@($server).Count -eq 0) {
     throw "Server '$ServerName' was not found in '$ConfigPath'."
+}
+$serverAddresses = @{}
+foreach ($configuredServer in $allServers) {
+    $serverAddresses[$configuredServer.Name] = $configuredServer.Address
 }
 
 $allServices = foreach ($line in $lines) {
@@ -333,6 +369,16 @@ $serviceGroupMembers = @($allServiceGroupMembers | Where-Object { $_.Server -ieq
 
 $serviceNames = Get-UniqueSorted @($services | ForEach-Object { $_.Name })
 $serviceGroupNames = Get-UniqueSorted @($serviceGroupMembers | ForEach-Object { $_.Name })
+
+$serviceGroupSslConfiguration = foreach ($line in $lines) {
+    $match = [regex]::Match($line, '^\s*(?:add\s+serviceGroup|set\s+ssl\s+serviceGroup|bind\s+ssl\s+serviceGroup)\s+(?<Group>\S+)', 'IgnoreCase')
+    if ($match.Success -and $match.Groups['Group'].Value -in $serviceGroupNames) {
+        [pscustomobject]@{
+            ServiceGroup = $match.Groups['Group'].Value
+            Line         = $line
+        }
+    }
+}
 
 $monitorNames = @(
     foreach ($line in $lines) {
@@ -367,6 +413,11 @@ $lbVserverNames = @(
         }
 
         $match = [regex]::Match($line, '^\s*bind\s+lb\s+vserver\s+(?<Vserver>\S+)\s+-serviceGroupName\s+(?<Group>\S+)', 'IgnoreCase')
+        if ($match.Success -and $match.Groups['Group'].Value -in $serviceGroupNames) {
+            $match.Groups['Vserver'].Value
+        }
+
+        $match = [regex]::Match($line, '^\s*bind\s+lb\s+vserver\s+(?<Vserver>\S+)\s+(?<Group>\S+)(?:\s|$)', 'IgnoreCase')
         if ($match.Success -and $match.Groups['Group'].Value -in $serviceGroupNames) {
             $match.Groups['Vserver'].Value
         }
@@ -410,12 +461,26 @@ $peerServers = @(
                 Where-Object { $_.Name -ieq $serviceGroupBinding.Groups['Group'].Value -and $_.Server -ine $server[0].Name } |
                 ForEach-Object {
                     $member = $_
-                    $peerServer = $allServers | Where-Object { $_.Name -ieq $member.Server } | Select-Object -First 1
                     [pscustomobject]@{
                         Name                 = $member.Server
-                        Address              = $peerServer.Address
+                        Address              = $serverAddresses[$member.Server]
                         Service              = $member.Name
                         LoadBalancingVserver = $serviceGroupBinding.Groups['Vserver'].Value
+                    }
+                }
+        }
+
+        $positionalServiceGroupBinding = [regex]::Match($line, '^\s*bind\s+lb\s+vserver\s+(?<Vserver>\S+)\s+(?<Group>\S+)(?:\s|$)', 'IgnoreCase')
+        if ($positionalServiceGroupBinding.Success -and $positionalServiceGroupBinding.Groups['Vserver'].Value -in $lbVserverNames -and $positionalServiceGroupBinding.Groups['Group'].Value -in $serviceGroupNames) {
+            $allServiceGroupMembers |
+                Where-Object { $_.Name -ieq $positionalServiceGroupBinding.Groups['Group'].Value -and $_.Server -ine $server[0].Name } |
+                ForEach-Object {
+                    $member = $_
+                    [pscustomobject]@{
+                        Name                 = $member.Server
+                        Address              = $serverAddresses[$member.Server]
+                        Service              = $member.Name
+                        LoadBalancingVserver = $positionalServiceGroupBinding.Groups['Vserver'].Value
                     }
                 }
         }
@@ -479,16 +544,57 @@ $certificateBindings = foreach ($line in $lines) {
     }
 }
 
+$processedLines = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+foreach ($item in @(
+        $server
+        $services
+        $serviceGroupMembers
+        $serviceGroupSslConfiguration
+        $monitors
+        $lbVservers
+        $contentSwitchingVservers
+        $certificateBindings
+    )) {
+    if ($null -ne $item -and $item.PSObject.Properties.Match('Line').Count -gt 0) {
+        [void]$processedLines.Add($item.Line)
+    }
+}
+foreach ($binding in $vserverBindings) {
+    [void]$processedLines.Add($binding)
+}
+
+$relatedObjectNames = Get-UniqueSorted @(
+    $server[0].Name
+    $serviceNames
+    $serviceGroupNames
+    $lbVserverNames
+    $contentSwitchingVservers | ForEach-Object { $_.Name }
+)
+$unprocessedRelevantLines = foreach ($line in $lines) {
+    if ($processedLines.Contains($line)) {
+        continue
+    }
+
+    foreach ($objectName in $relatedObjectNames) {
+        if ($line -match [regex]::Escape($objectName)) {
+            $line
+            break
+        }
+    }
+}
+
 $result = [pscustomobject]@{
     Server                  = $server[0]
     PeerServers             = @($peerServers)
     Services                = @($services)
     ServiceGroups           = @($serviceGroupMembers)
+    ServiceGroupSslConfiguration = @($serviceGroupSslConfiguration)
     Monitors                = @($monitors)
     LoadBalancingVservers   = @($lbVservers)
     ContentSwitchingVservers = @($contentSwitchingVservers)
     Certificates            = @($certificateBindings)
     VserverBindings         = @($vserverBindings)
+    UnprocessedRelevantLines = @($unprocessedRelevantLines)
 }
 
 $selectedFormats = @($AsJson, $AsObject, $AsHtml) | Where-Object { $_ }
