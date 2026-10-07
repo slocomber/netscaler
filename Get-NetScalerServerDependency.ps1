@@ -102,18 +102,6 @@ function Test-NetScalerDisabled {
     $State -ieq 'DISABLED'
 }
 
-function Test-NetScalerLineReferencesObject {
-    param(
-        [Parameter(Mandatory)]
-        [string]$Line,
-
-        [Parameter(Mandatory)]
-        [string]$ObjectName
-    )
-
-    [regex]::IsMatch($Line, "(?i)(?:^|\s|[""'])$([regex]::Escape($ObjectName))(?=$|\s|[""'])")
-}
-
 function Add-NetScalerTextTable {
     param(
         [Parameter(Mandatory)]
@@ -308,7 +296,13 @@ function ConvertTo-NetScalerReport {
     $report.Add('-------------')
     $report.Add('Global DNS-aware virtual servers that use the discovered GSLB service groups.')
     Add-NetScalerTextTable -Report $report -Rows @($Dependency.GslbVservers) -Columns Name, ServiceType, ServiceGroup -MaxRows $MaxRowsPerSection
-    Add-NetScalerRawCommands -Report $report -Commands @($Dependency.GslbVservers | ForEach-Object { $_.Line; $_.BindingLine }) -MaxRows $MaxRowsPerSection
+    Add-NetScalerRawCommands -Report $report -Commands @($Dependency.GslbVservers | ForEach-Object { $_.Line; $_.BindingLine }; $Dependency.GslbVserverConfiguration | ForEach-Object { $_.Line }) -MaxRows $MaxRowsPerSection
+
+    $report.Add('')
+    $report.Add('GSLB failover indicators')
+    $report.Add('------------------------')
+    $report.Add('Explicit backup, priority, and standby settings. A backup vServer relationship is the only indicator labelled as active/passive explicitly configured.')
+    Add-NetScalerTextTable -Report $report -Rows @($Dependency.GslbFailoverIndicators) -Columns Vserver, ServiceGroup, Indicator, Value, Assessment -MaxRows $MaxRowsPerSection
 
     $report.Add('')
     $report.Add('GSLB domains')
@@ -459,6 +453,10 @@ function ConvertTo-NetScalerHtmlReport {
         $rowClass = if ($vserver.IsDisabled) { ' class="disabled"' } else { '' }
         "<tr$rowClass><td>$(ConvertTo-HtmlText $vserver.Name)</td><td>$(ConvertTo-HtmlText $vserver.ServiceType)</td><td>$(ConvertTo-HtmlText $vserver.ServiceGroup)</td></tr>"
     }
+    $gslbFailoverIndicatorRows = ConvertTo-HtmlRows -Items @($Dependency.GslbFailoverIndicators) -Row {
+        param($indicator)
+        "<tr><td>$(ConvertTo-HtmlText $indicator.Vserver)</td><td>$(ConvertTo-HtmlText $indicator.ServiceGroup)</td><td>$(ConvertTo-HtmlText $indicator.Indicator)</td><td>$(ConvertTo-HtmlText $indicator.Value)</td><td>$(ConvertTo-HtmlText $indicator.Assessment)</td></tr>"
+    }
     $gslbDomainRows = ConvertTo-HtmlRows -Items @($Dependency.GslbDomains) -Row {
         param($domain)
         $rowClass = if ($domain.IsDisabled) { ' class="disabled"' } else { '' }
@@ -496,7 +494,7 @@ function ConvertTo-NetScalerHtmlReport {
     $gslbMemberRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.GslbServiceGroupMembers | ForEach-Object { $_.Line })
     $gslbServiceGroupRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.GslbServiceGroups | ForEach-Object { $_.Line })
     $gslbMonitorRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.GslbMonitorConfiguration | ForEach-Object { $_.Line }; $Dependency.GslbMonitorBindingLines)
-    $gslbVserverRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.GslbVservers | ForEach-Object { $_.Line; $_.BindingLine })
+    $gslbVserverRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.GslbVservers | ForEach-Object { $_.Line; $_.BindingLine }; $Dependency.GslbVserverConfiguration | ForEach-Object { $_.Line })
     $gslbDomainRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.GslbDomains | ForEach-Object { $_.Line })
     $certificateRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.Certificates | ForEach-Object { $_.Line })
     $bindingRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.VserverBindings)
@@ -570,6 +568,9 @@ $gslbMonitorRawCommands
 <p class="metadata">Global DNS-aware virtual servers that use the discovered GSLB service groups.</p>
 <table><thead><tr><th>Name</th><th>Service type</th><th>GSLB service group</th></tr></thead><tbody>$gslbVserverRows</tbody></table>
 $gslbVserverRawCommands
+<h2>GSLB failover indicators</h2>
+<p class="metadata">Explicit backup, priority, and standby settings. A backup vServer relationship is the only indicator labelled as active/passive explicitly configured.</p>
+<table><thead><tr><th>GSLB vServer</th><th>Service group</th><th>Indicator</th><th>Value</th><th>Assessment</th></tr></thead><tbody>$gslbFailoverIndicatorRows</tbody></table>
 <h2>GSLB domains</h2>
 <p class="metadata">Domain names bound to discovered GSLB virtual servers.</p>
 <table><thead><tr><th>GSLB vServer</th><th>Domain name</th></tr></thead><tbody>$gslbDomainRows</tbody></table>
@@ -891,6 +892,8 @@ $gslbServiceGroupMembers = foreach ($line in $lines) {
             Port                            = [int]$match.Groups['Port'].Value
             PublicIp                        = Get-NetScalerOption -Line $line -Name 'publicIP'
             PublicPort                      = Get-NetScalerOption -Line $line -Name 'publicPort'
+            Weight                          = Get-NetScalerOption -Line $line -Name 'weight'
+            Priority                        = Get-NetScalerOption -Line $line -Name 'priority'
             State                            = Get-NetScalerOption -Line $line -Name 'state'
             IsDisabled                       = (Test-NetScalerDisabled (Get-NetScalerOption -Line $line -Name 'state')) -or $gslbServiceGroupsByName[$match.Groups['Group'].Value].IsDisabled
             DiscoveryLoadBalancingVservers  = if ($lbVserversByEndpoint.ContainsKey($endpointKey)) {
@@ -915,7 +918,12 @@ $gslbVserverBindings = foreach ($line in $lines) {
     $match = [regex]::Match($line, '^\s*bind\s+gslb\s+vserver\s+(?<Vserver>\S+)', 'IgnoreCase')
     $serviceGroupName = if ($match.Success) { Get-NetScalerOption -Line $line -Name 'serviceGroupName' } else { $null }
     if ($match.Success -and $serviceGroupName -in $gslbServiceGroupNames) {
-        [pscustomobject]@{ Name = $match.Groups['Vserver'].Value; ServiceGroup = $serviceGroupName; BindingLine = $line }
+        [pscustomobject]@{
+            Name = $match.Groups['Vserver'].Value
+            ServiceGroup = $serviceGroupName
+            Priority = Get-NetScalerOption -Line $line -Name 'priority'
+            BindingLine = $line
+        }
     }
 }
 
@@ -934,6 +942,89 @@ $gslbVservers = foreach ($binding in $gslbVserverBindings) {
 }
 
 $gslbVserverNames = Get-UniqueSorted @($gslbVservers | ForEach-Object { $_.Name })
+$gslbVserverConfiguration = @(
+    foreach ($vserver in $gslbVservers) {
+        foreach ($option in (Get-NetScalerOptionPairs -Line $vserver.Line)) {
+            [pscustomobject]@{
+                Vserver = $vserver.Name
+                Command = 'add'
+                Setting = $option.Name
+                Value = $option.Value
+                Line = $vserver.Line
+            }
+        }
+    }
+
+    foreach ($line in $lines) {
+        $match = [regex]::Match($line, '^\s*set\s+gslb\s+vserver\s+(?<Vserver>\S+)', 'IgnoreCase')
+        if ($match.Success -and $match.Groups['Vserver'].Value -in $gslbVserverNames) {
+            foreach ($option in (Get-NetScalerOptionPairs -Line $line)) {
+                [pscustomobject]@{
+                    Vserver = $match.Groups['Vserver'].Value
+                    Command = 'set'
+                    Setting = $option.Name
+                    Value = $option.Value
+                    Line = $line
+                }
+            }
+        }
+    }
+)
+$gslbFailoverIndicators = @(
+    foreach ($configuration in $gslbVserverConfiguration) {
+        if ($configuration.Setting -ieq 'backupVServer' -and $configuration.Value) {
+            [pscustomobject]@{
+                Vserver = $configuration.Vserver
+                ServiceGroup = ''
+                Indicator = 'Explicit backup vServer'
+                Value = $configuration.Value
+                Assessment = 'Active/passive explicitly configured.'
+            }
+        }
+        elseif ($configuration.Setting -ieq 'backupLBMethod' -and $configuration.Value -and $configuration.Value -ine 'NONE') {
+            [pscustomobject]@{
+                Vserver = $configuration.Vserver
+                ServiceGroup = ''
+                Indicator = 'Backup load-balancing method'
+                Value = $configuration.Value
+                Assessment = 'Backup selection configured; this alone does not prove active/passive.'
+            }
+        }
+    }
+
+    foreach ($binding in $gslbVserverBindings) {
+        if ($binding.Priority) {
+            [pscustomobject]@{
+                Vserver = $binding.Name
+                ServiceGroup = $binding.ServiceGroup
+                Indicator = 'Service-group priority'
+                Value = $binding.Priority
+                Assessment = 'Priority-based preference configured; review all priorities to determine failover behaviour.'
+            }
+        }
+    }
+
+    foreach ($member in $gslbServiceGroupMembers) {
+        if ($member.Priority) {
+            [pscustomobject]@{
+                Vserver = ''
+                ServiceGroup = $member.GslbServiceGroup
+                Indicator = 'Member priority'
+                Value = $member.Priority
+                Assessment = 'Priority-based preference configured; review all priorities to determine failover behaviour.'
+            }
+        }
+        if ($member.IsDisabled) {
+            [pscustomobject]@{
+                Vserver = ''
+                ServiceGroup = $member.GslbServiceGroup
+                Indicator = 'Disabled GSLB member'
+                Value = "$($member.Address):$($member.Port)"
+                Assessment = 'Manual standby; it is not available for automatic failover while disabled.'
+            }
+        }
+    }
+)
 $gslbVserversByName = @{}
 foreach ($vserver in $gslbVservers) {
     $gslbVserversByName[$vserver.Name] = $vserver
@@ -1191,6 +1282,7 @@ foreach ($item in @(
         $gslbServiceGroups
         $gslbServiceGroupMembers
         $gslbVservers
+        $gslbVserverConfiguration
         $gslbDomains
         $gslbMonitors
         $gslbMonitorConfiguration
@@ -1235,16 +1327,20 @@ $relatedObjectNames = Get-UniqueSorted @(
     $gslbVservers | ForEach-Object { $_.Name; $_.ServiceGroup }
     $gslbDomains | ForEach-Object { $_.Name }
 )
+$relatedObjectPattern = if ($relatedObjectNames.Count -gt 0) {
+    $relatedObjectAlternatives = @($relatedObjectNames | ForEach-Object { [regex]::Escape($_) }) -join '|'
+    "(?i)(?:^|\s|[""'])(?:$relatedObjectAlternatives)(?=$|\s|[""'])"
+}
+else {
+    $null
+}
 $unprocessedRelevantLines = foreach ($line in $lines) {
     if ($processedLines.Contains($line)) {
         continue
     }
 
-    foreach ($objectName in $relatedObjectNames) {
-        if (Test-NetScalerLineReferencesObject -Line $line -ObjectName $objectName) {
-            $line
-            break
-        }
+    if ($relatedObjectPattern -and $line -match $relatedObjectPattern) {
+        $line
     }
 }
 
@@ -1257,6 +1353,8 @@ $result = [pscustomobject]@{
     GslbServiceGroups        = @($gslbServiceGroups)
     GslbServiceGroupMembers = @($gslbServiceGroupMembers)
     GslbVservers            = @($gslbVservers)
+    GslbVserverConfiguration = @($gslbVserverConfiguration)
+    GslbFailoverIndicators  = @($gslbFailoverIndicators)
     GslbDomains              = @($gslbDomains)
     GslbMonitors             = @($gslbMonitors)
     GslbMonitorConfiguration = @($gslbMonitorConfiguration)
