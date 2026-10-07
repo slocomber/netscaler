@@ -157,6 +157,28 @@ function ConvertTo-NetScalerReport {
     }
 
     $report.Add('')
+    $report.Add('GSLB service-group members')
+    $report.Add('--------------------------')
+    if ($Dependency.GslbServiceGroupMembers.Count -eq 0) {
+        $report.Add('  (none)')
+    }
+    foreach ($member in $Dependency.GslbServiceGroupMembers) {
+        $publicEndpoint = if ($member.PublicIp) { " public=$($member.PublicIp):$($member.PublicPort)" } else { '' }
+        $report.Add("  $($member.LocalServiceGroup) -> $($member.GslbServiceGroup): $($member.Address):$($member.Port)$publicEndpoint")
+    }
+
+    $report.Add('')
+    $report.Add('GSLB vServers')
+    $report.Add('-------------')
+    if ($Dependency.GslbVservers.Count -eq 0) {
+        $report.Add('  (none)')
+    }
+    foreach ($vserver in $Dependency.GslbVservers) {
+        $serviceType = if ($vserver.ServiceType) { " ($($vserver.ServiceType))" } else { '' }
+        $report.Add("  $($vserver.Name)$serviceType -> $($vserver.ServiceGroup) [$($vserver.LocalServiceGroup)]")
+    }
+
+    $report.Add('')
     $report.Add('Certificate bindings')
     $report.Add('--------------------')
     if ($Dependency.Certificates.Count -eq 0) {
@@ -177,8 +199,8 @@ function ConvertTo-NetScalerReport {
     }
 
     $report.Add('')
-    $report.Add('Related unprocessed configuration lines')
-    $report.Add('---------------------------------------')
+    $report.Add('Unprocessed lines for all discovered objects')
+    $report.Add('--------------------------------------------')
     if ($Dependency.UnprocessedRelevantLines.Count -eq 0) {
         $report.Add('  (none)')
     }
@@ -256,6 +278,15 @@ function ConvertTo-NetScalerHtmlReport {
         $route = "policy=$($vserver.Policy), action=$($vserver.Action), target=$($vserver.TargetLBVserver)"
         "<tr><td>$(ConvertTo-HtmlText $vserver.Name)</td><td>$(ConvertTo-HtmlText $endpoint)</td><td>$(ConvertTo-HtmlText $route)</td></tr>"
     }
+    $gslbMemberRows = ConvertTo-HtmlRows -Items @($Dependency.GslbServiceGroupMembers) -Row {
+        param($member)
+        $publicEndpoint = if ($member.PublicIp) { "$($member.PublicIp):$($member.PublicPort)" } else { '' }
+        "<tr><td>$(ConvertTo-HtmlText $member.LocalServiceGroup)</td><td>$(ConvertTo-HtmlText $member.GslbServiceGroup)</td><td>$(ConvertTo-HtmlText "$($member.Address):$($member.Port)")</td><td>$(ConvertTo-HtmlText $publicEndpoint)</td></tr>"
+    }
+    $gslbVserverRows = ConvertTo-HtmlRows -Items @($Dependency.GslbVservers) -Row {
+        param($vserver)
+        "<tr><td>$(ConvertTo-HtmlText $vserver.Name)</td><td>$(ConvertTo-HtmlText $vserver.ServiceType)</td><td>$(ConvertTo-HtmlText $vserver.ServiceGroup)</td><td>$(ConvertTo-HtmlText $vserver.LocalServiceGroup)</td></tr>"
+    }
     $certificateRows = ConvertTo-HtmlRows -Items @($Dependency.Certificates) -Row {
         param($certificate)
         "<tr><td>$(ConvertTo-HtmlText $certificate.Vserver)</td><td>$(ConvertTo-HtmlText $certificate.Certificate)</td></tr>"
@@ -304,11 +335,15 @@ th { background: #f3f4f6; } code { overflow-wrap: anywhere; } .empty { color: #6
 <table><thead><tr><th>Name</th><th>VIP</th><th>Settings</th></tr></thead><tbody>$lbVserverRows</tbody></table>
 <h2>Content-switching vServers</h2>
 <table><thead><tr><th>Name</th><th>VIP</th><th>Route</th></tr></thead><tbody>$csVserverRows</tbody></table>
+<h2>GSLB service-group members</h2>
+<table><thead><tr><th>Local service group</th><th>GSLB service group</th><th>Member endpoint</th><th>Public endpoint</th></tr></thead><tbody>$gslbMemberRows</tbody></table>
+<h2>GSLB vServers</h2>
+<table><thead><tr><th>Name</th><th>Service type</th><th>GSLB service group</th><th>Local service group</th></tr></thead><tbody>$gslbVserverRows</tbody></table>
 <h2>Certificate bindings</h2>
 <table><thead><tr><th>vServer</th><th>Certificate</th></tr></thead><tbody>$certificateRows</tbody></table>
 <h2>Relevant vServer bindings</h2>
 <table><thead><tr><th>Binding</th></tr></thead><tbody>$bindingRows</tbody></table>
-<h2>Related unprocessed configuration lines</h2>
+<h2>Unprocessed lines for all discovered objects</h2>
 <table><thead><tr><th>Configuration line</th></tr></thead><tbody>$unprocessedLineRows</tbody></table>
 </body>
 </html>
@@ -377,6 +412,63 @@ $serviceGroupSslConfiguration = foreach ($line in $lines) {
             ServiceGroup = $match.Groups['Group'].Value
             Line         = $line
         }
+    }
+}
+
+$gslbGroupToLocalServiceGroup = @{}
+foreach ($serviceGroupName in $serviceGroupNames) {
+    $gslbGroupToLocalServiceGroup["gslb_$serviceGroupName"] = $serviceGroupName
+}
+
+$gslbServiceGroupMembers = foreach ($line in $lines) {
+    $match = [regex]::Match($line, '^\s*bind\s+gslb\s+serviceGroup\s+(?<Group>\S+)\s+(?<Address>\S+)\s+(?<Port>\d+)', 'IgnoreCase')
+    if ($match.Success -and $gslbGroupToLocalServiceGroup.ContainsKey($match.Groups['Group'].Value)) {
+        [pscustomobject]@{
+            LocalServiceGroup = $gslbGroupToLocalServiceGroup[$match.Groups['Group'].Value]
+            GslbServiceGroup  = $match.Groups['Group'].Value
+            Address            = $match.Groups['Address'].Value
+            Port               = [int]$match.Groups['Port'].Value
+            PublicIp           = Get-NetScalerOption -Line $line -Name 'publicIP'
+            PublicPort         = Get-NetScalerOption -Line $line -Name 'publicPort'
+            Line               = $line
+        }
+    }
+}
+
+$gslbVserverBindings = foreach ($line in $lines) {
+    $match = [regex]::Match($line, '^\s*bind\s+gslb\s+vserver\s+(?<Vserver>\S+)\s+-serviceGroupName\s+(?<Group>\S+)', 'IgnoreCase')
+    if ($match.Success -and $gslbGroupToLocalServiceGroup.ContainsKey($match.Groups['Group'].Value)) {
+        [pscustomobject]@{
+            Name              = $match.Groups['Vserver'].Value
+            ServiceGroup      = $match.Groups['Group'].Value
+            LocalServiceGroup = $gslbGroupToLocalServiceGroup[$match.Groups['Group'].Value]
+            BindingLine       = $line
+        }
+    }
+
+    $match = [regex]::Match($line, '^\s*bind\s+gslb\s+vserver\s+(?<Vserver>\S+)\s+(?<Group>\S+)(?:\s|$)', 'IgnoreCase')
+    if ($match.Success -and $gslbGroupToLocalServiceGroup.ContainsKey($match.Groups['Group'].Value)) {
+        [pscustomobject]@{
+            Name              = $match.Groups['Vserver'].Value
+            ServiceGroup      = $match.Groups['Group'].Value
+            LocalServiceGroup = $gslbGroupToLocalServiceGroup[$match.Groups['Group'].Value]
+            BindingLine       = $line
+        }
+    }
+}
+
+$gslbVservers = foreach ($binding in $gslbVserverBindings) {
+    $definitionLine = $lines | Where-Object { $_ -match "^\s*add\s+gslb\s+vserver\s+$([regex]::Escape($binding.Name))\s+" } | Select-Object -First 1
+    $definition = if ($definitionLine) {
+        [regex]::Match($definitionLine, '^\s*add\s+gslb\s+vserver\s+(?<Name>\S+)\s+(?<ServiceType>\S+)', 'IgnoreCase')
+    }
+    [pscustomobject]@{
+        Name              = $binding.Name
+        ServiceType       = if ($null -ne $definition -and $definition.Success) { $definition.Groups['ServiceType'].Value } else { $null }
+        ServiceGroup      = $binding.ServiceGroup
+        LocalServiceGroup = $binding.LocalServiceGroup
+        BindingLine       = $binding.BindingLine
+        Line              = $definitionLine
     }
 }
 
@@ -550,6 +642,8 @@ foreach ($item in @(
         $services
         $serviceGroupMembers
         $serviceGroupSslConfiguration
+        $gslbServiceGroupMembers
+        $gslbVservers
         $monitors
         $lbVservers
         $contentSwitchingVservers
@@ -562,13 +656,21 @@ foreach ($item in @(
 foreach ($binding in $vserverBindings) {
     [void]$processedLines.Add($binding)
 }
+foreach ($binding in $gslbVserverBindings) {
+    [void]$processedLines.Add($binding.BindingLine)
+}
 
 $relatedObjectNames = Get-UniqueSorted @(
     $server[0].Name
     $serviceNames
     $serviceGroupNames
+    $monitorNames
     $lbVserverNames
-    $contentSwitchingVservers | ForEach-Object { $_.Name }
+    $peerServers | ForEach-Object { $_.Name }
+    $contentSwitchingVservers | ForEach-Object { $_.Name; $_.Policy; $_.Action }
+    $certificateBindings | ForEach-Object { $_.Certificate }
+    $gslbServiceGroupMembers | ForEach-Object { $_.GslbServiceGroup }
+    $gslbVservers | ForEach-Object { $_.Name; $_.ServiceGroup }
 )
 $unprocessedRelevantLines = foreach ($line in $lines) {
     if ($processedLines.Contains($line)) {
@@ -589,6 +691,8 @@ $result = [pscustomobject]@{
     Services                = @($services)
     ServiceGroups           = @($serviceGroupMembers)
     ServiceGroupSslConfiguration = @($serviceGroupSslConfiguration)
+    GslbServiceGroupMembers = @($gslbServiceGroupMembers)
+    GslbVservers            = @($gslbVservers)
     Monitors                = @($monitors)
     LoadBalancingVservers   = @($lbVservers)
     ContentSwitchingVservers = @($contentSwitchingVservers)
