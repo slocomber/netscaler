@@ -102,6 +102,18 @@ function Test-NetScalerDisabled {
     $State -ieq 'DISABLED'
 }
 
+function Test-NetScalerLineReferencesObject {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Line,
+
+        [Parameter(Mandatory)]
+        [string]$ObjectName
+    )
+
+    [regex]::IsMatch($Line, "(?i)(?:^|\s|[""'])$([regex]::Escape($ObjectName))(?=$|\s|[""'])")
+}
+
 function Add-NetScalerTextTable {
     param(
         [Parameter(Mandatory)]
@@ -237,8 +249,16 @@ function ConvertTo-NetScalerReport {
     $report.Add('')
     $report.Add('Load-balancing vServers')
     $report.Add('------------------------')
-    $report.Add('Local virtual IP endpoints that distribute traffic to the selected backend.')
-    Add-NetScalerTextTable -Report $report -Rows @($Dependency.LoadBalancingVservers) -Columns Name, Protocol, Address, Port -MaxRows $MaxRowsPerSection
+    $report.Add('Local virtual IP endpoints that distribute traffic to the selected backend. Non-addressable vServers are internal policy targets without a client-facing VIP.')
+    $lbVserverRows = @($Dependency.LoadBalancingVservers | ForEach-Object {
+            [pscustomobject]@{
+                Name = $_.Name
+                Protocol = $_.Protocol
+                Address = if ($_.IsNonAddressable) { 'Non-addressable' } else { $_.Address }
+                Port = if ($_.IsNonAddressable) { '' } else { $_.Port }
+            }
+        })
+    Add-NetScalerTextTable -Report $report -Rows $lbVserverRows -Columns Name, Protocol, Address, Port -MaxRows $MaxRowsPerSection
     $report.Add('Explicit vServer configuration:')
     Add-NetScalerTextTable -Report $report -Rows @($Dependency.LoadBalancingVserverConfiguration) -Columns Vserver, Command, Purpose, Setting, Value -MaxRows $MaxRowsPerSection
     Add-NetScalerRawCommands -Report $report -Commands @($Dependency.LoadBalancingVservers | ForEach-Object { $_.Line }; $Dependency.LoadBalancingVserverConfiguration | ForEach-Object { $_.Line }) -MaxRows $MaxRowsPerSection
@@ -409,7 +429,9 @@ function ConvertTo-NetScalerHtmlReport {
     $lbVserverRows = ConvertTo-HtmlRows -Items @($Dependency.LoadBalancingVservers) -Row {
         param($vserver)
         $rowClass = if ($vserver.IsDisabled) { ' class="disabled"' } else { '' }
-        "<tr$rowClass><td>$(ConvertTo-HtmlText $vserver.Name)</td><td>$(ConvertTo-HtmlText $vserver.Protocol)</td><td>$(ConvertTo-HtmlText $vserver.Address)</td><td>$(ConvertTo-HtmlText $vserver.Port)</td></tr>"
+        $address = if ($vserver.IsNonAddressable) { 'Non-addressable' } else { $vserver.Address }
+        $port = if ($vserver.IsNonAddressable) { '' } else { $vserver.Port }
+        "<tr$rowClass><td>$(ConvertTo-HtmlText $vserver.Name)</td><td>$(ConvertTo-HtmlText $vserver.Protocol)</td><td>$(ConvertTo-HtmlText $address)</td><td>$(ConvertTo-HtmlText $port)</td></tr>"
     }
     $lbVserverConfigurationRows = ConvertTo-HtmlRows -Items @($Dependency.LoadBalancingVserverConfiguration) -Row {
         param($configuration)
@@ -523,7 +545,7 @@ $serviceGroupSslRawCommands
 <table><thead><tr><th>Name</th><th>Type</th><th>Bound to</th></tr></thead><tbody>$monitorRows</tbody></table>
 $monitorRawCommands
 <h2>Load-balancing vServers</h2>
-<p class="metadata">Local virtual IP endpoints that distribute traffic to the selected backend.</p>
+<p class="metadata">Local virtual IP endpoints that distribute traffic to the selected backend. Non-addressable vServers are internal policy targets without a client-facing VIP.</p>
 <table><thead><tr><th>Name</th><th>Protocol</th><th>Address</th><th>Port</th></tr></thead><tbody>$lbVserverRows</tbody></table>
 <table><thead><tr><th>Virtual server</th><th>Command</th><th>Purpose</th><th>Setting</th><th>Value</th></tr></thead><tbody>$lbVserverConfigurationRows</tbody></table>
 $lbVserverRawCommands
@@ -612,7 +634,7 @@ $allServices = foreach ($line in $lines) {
 $services = @($allServices | Where-Object { $_.Server -ieq $server[0].Name })
 
 $allServiceGroupMembers = foreach ($line in $lines) {
-    $match = [regex]::Match($line, '^\s*bind\s+serviceGroup\s+(?<Group>\S+)\s+(?<Server>\S+)(?:\s+(?<Port>\d+))?', 'IgnoreCase')
+    $match = [regex]::Match($line, '^\s*bind\s+serviceGroup\s+(?<Group>\S+)\s+(?<Server>(?!-)\S+)(?:\s+(?<Port>\d+))?', 'IgnoreCase')
     if ($match.Success) {
         [pscustomobject]@{
             Name = $match.Groups['Group'].Value
@@ -750,6 +772,7 @@ $lbVservers = foreach ($line in $lines) {
             LoadMethod = Get-NetScalerOption -Line $line -Name 'lbMethod'
             State      = Get-NetScalerOption -Line $line -Name 'state'
             IsDisabled = Test-NetScalerDisabled (Get-NetScalerOption -Line $line -Name 'state')
+            IsNonAddressable = $match.Groups['Address'].Value -eq '0.0.0.0' -and [int]$match.Groups['Port'].Value -eq 0
             Line       = $line
         }
     }
@@ -803,6 +826,10 @@ foreach ($configuration in $lbVserverConfiguration) {
 }
 $lbVserversByEndpoint = @{}
 foreach ($vserver in $lbVservers) {
+    if ($vserver.IsNonAddressable) {
+        continue
+    }
+
     $endpointKey = "$($vserver.Address)|$($vserver.Port)"
     if (-not $lbVserversByEndpoint.ContainsKey($endpointKey)) {
         $lbVserversByEndpoint[$endpointKey] = [System.Collections.Generic.List[string]]::new()
@@ -1214,7 +1241,7 @@ $unprocessedRelevantLines = foreach ($line in $lines) {
     }
 
     foreach ($objectName in $relatedObjectNames) {
-        if ($line -match [regex]::Escape($objectName)) {
+        if (Test-NetScalerLineReferencesObject -Line $line -ObjectName $objectName) {
             $line
             break
         }
