@@ -164,7 +164,8 @@ function ConvertTo-NetScalerReport {
     }
     foreach ($member in $Dependency.GslbServiceGroupMembers) {
         $publicEndpoint = if ($member.PublicIp) { " public=$($member.PublicIp):$($member.PublicPort)" } else { '' }
-        $report.Add("  $($member.LocalServiceGroup) -> $($member.GslbServiceGroup): $($member.Address):$($member.Port)$publicEndpoint")
+        $selectedMarker = if ($member.IsSelectedServer) { ' [selected backend]' } else { '' }
+        $report.Add("  $($member.GslbServiceGroup): $($member.Address):$($member.Port)$publicEndpoint$selectedMarker")
     }
 
     $report.Add('')
@@ -175,7 +176,7 @@ function ConvertTo-NetScalerReport {
     }
     foreach ($vserver in $Dependency.GslbVservers) {
         $serviceType = if ($vserver.ServiceType) { " ($($vserver.ServiceType))" } else { '' }
-        $report.Add("  $($vserver.Name)$serviceType -> $($vserver.ServiceGroup) [$($vserver.LocalServiceGroup)]")
+        $report.Add("  $($vserver.Name)$serviceType -> $($vserver.ServiceGroup)")
     }
 
     $report.Add('')
@@ -281,11 +282,12 @@ function ConvertTo-NetScalerHtmlReport {
     $gslbMemberRows = ConvertTo-HtmlRows -Items @($Dependency.GslbServiceGroupMembers) -Row {
         param($member)
         $publicEndpoint = if ($member.PublicIp) { "$($member.PublicIp):$($member.PublicPort)" } else { '' }
-        "<tr><td>$(ConvertTo-HtmlText $member.LocalServiceGroup)</td><td>$(ConvertTo-HtmlText $member.GslbServiceGroup)</td><td>$(ConvertTo-HtmlText "$($member.Address):$($member.Port)")</td><td>$(ConvertTo-HtmlText $publicEndpoint)</td></tr>"
+        $selectedBackend = if ($member.IsSelectedServer) { $member.ServerName } else { '' }
+        "<tr><td>$(ConvertTo-HtmlText $member.GslbServiceGroup)</td><td>$(ConvertTo-HtmlText "$($member.Address):$($member.Port)")</td><td>$(ConvertTo-HtmlText $publicEndpoint)</td><td>$(ConvertTo-HtmlText $selectedBackend)</td></tr>"
     }
     $gslbVserverRows = ConvertTo-HtmlRows -Items @($Dependency.GslbVservers) -Row {
         param($vserver)
-        "<tr><td>$(ConvertTo-HtmlText $vserver.Name)</td><td>$(ConvertTo-HtmlText $vserver.ServiceType)</td><td>$(ConvertTo-HtmlText $vserver.ServiceGroup)</td><td>$(ConvertTo-HtmlText $vserver.LocalServiceGroup)</td></tr>"
+        "<tr><td>$(ConvertTo-HtmlText $vserver.Name)</td><td>$(ConvertTo-HtmlText $vserver.ServiceType)</td><td>$(ConvertTo-HtmlText $vserver.ServiceGroup)</td></tr>"
     }
     $certificateRows = ConvertTo-HtmlRows -Items @($Dependency.Certificates) -Row {
         param($certificate)
@@ -336,9 +338,9 @@ th { background: #f3f4f6; } code { overflow-wrap: anywhere; } .empty { color: #6
 <h2>Content-switching vServers</h2>
 <table><thead><tr><th>Name</th><th>VIP</th><th>Route</th></tr></thead><tbody>$csVserverRows</tbody></table>
 <h2>GSLB service-group members</h2>
-<table><thead><tr><th>Local service group</th><th>GSLB service group</th><th>Member endpoint</th><th>Public endpoint</th></tr></thead><tbody>$gslbMemberRows</tbody></table>
+<table><thead><tr><th>GSLB service group</th><th>Member endpoint</th><th>Public endpoint</th><th>Selected backend</th></tr></thead><tbody>$gslbMemberRows</tbody></table>
 <h2>GSLB vServers</h2>
-<table><thead><tr><th>Name</th><th>Service type</th><th>GSLB service group</th><th>Local service group</th></tr></thead><tbody>$gslbVserverRows</tbody></table>
+<table><thead><tr><th>Name</th><th>Service type</th><th>GSLB service group</th></tr></thead><tbody>$gslbVserverRows</tbody></table>
 <h2>Certificate bindings</h2>
 <table><thead><tr><th>vServer</th><th>Certificate</th></tr></thead><tbody>$certificateRows</tbody></table>
 <h2>Relevant vServer bindings</h2>
@@ -415,44 +417,47 @@ $serviceGroupSslConfiguration = foreach ($line in $lines) {
     }
 }
 
-$gslbGroupToLocalServiceGroup = @{}
-foreach ($serviceGroupName in $serviceGroupNames) {
-    $gslbGroupToLocalServiceGroup["gslb_$serviceGroupName"] = $serviceGroupName
-}
+$gslbServiceGroupNames = @(
+    foreach ($line in $lines) {
+        $match = [regex]::Match($line, '^\s*bind\s+gslb\s+serviceGroup\s+(?<Group>\S+)\s+(?<Address>\S+)\s+(?<Port>\d+)', 'IgnoreCase')
+        if ($match.Success -and $match.Groups['Address'].Value -eq $server[0].Address) {
+            $match.Groups['Group'].Value
+        }
+    }
+) | Sort-Object -Unique
 
 $gslbServiceGroupMembers = foreach ($line in $lines) {
     $match = [regex]::Match($line, '^\s*bind\s+gslb\s+serviceGroup\s+(?<Group>\S+)\s+(?<Address>\S+)\s+(?<Port>\d+)', 'IgnoreCase')
-    if ($match.Success -and $gslbGroupToLocalServiceGroup.ContainsKey($match.Groups['Group'].Value)) {
+    if ($match.Success -and $match.Groups['Group'].Value -in $gslbServiceGroupNames) {
         [pscustomobject]@{
-            LocalServiceGroup = $gslbGroupToLocalServiceGroup[$match.Groups['Group'].Value]
-            GslbServiceGroup  = $match.Groups['Group'].Value
-            Address            = $match.Groups['Address'].Value
-            Port               = [int]$match.Groups['Port'].Value
-            PublicIp           = Get-NetScalerOption -Line $line -Name 'publicIP'
-            PublicPort         = Get-NetScalerOption -Line $line -Name 'publicPort'
-            Line               = $line
+            ServerName       = $server[0].Name
+            GslbServiceGroup = $match.Groups['Group'].Value
+            Address          = $match.Groups['Address'].Value
+            Port             = [int]$match.Groups['Port'].Value
+            PublicIp         = Get-NetScalerOption -Line $line -Name 'publicIP'
+            PublicPort       = Get-NetScalerOption -Line $line -Name 'publicPort'
+            IsSelectedServer = $match.Groups['Address'].Value -eq $server[0].Address
+            Line             = $line
         }
     }
 }
 
 $gslbVserverBindings = foreach ($line in $lines) {
     $match = [regex]::Match($line, '^\s*bind\s+gslb\s+vserver\s+(?<Vserver>\S+)\s+-serviceGroupName\s+(?<Group>\S+)', 'IgnoreCase')
-    if ($match.Success -and $gslbGroupToLocalServiceGroup.ContainsKey($match.Groups['Group'].Value)) {
+    if ($match.Success -and $match.Groups['Group'].Value -in $gslbServiceGroupNames) {
         [pscustomobject]@{
-            Name              = $match.Groups['Vserver'].Value
-            ServiceGroup      = $match.Groups['Group'].Value
-            LocalServiceGroup = $gslbGroupToLocalServiceGroup[$match.Groups['Group'].Value]
-            BindingLine       = $line
+            Name        = $match.Groups['Vserver'].Value
+            ServiceGroup = $match.Groups['Group'].Value
+            BindingLine = $line
         }
     }
 
     $match = [regex]::Match($line, '^\s*bind\s+gslb\s+vserver\s+(?<Vserver>\S+)\s+(?<Group>\S+)(?:\s|$)', 'IgnoreCase')
-    if ($match.Success -and $gslbGroupToLocalServiceGroup.ContainsKey($match.Groups['Group'].Value)) {
+    if ($match.Success -and $match.Groups['Group'].Value -in $gslbServiceGroupNames) {
         [pscustomobject]@{
-            Name              = $match.Groups['Vserver'].Value
-            ServiceGroup      = $match.Groups['Group'].Value
-            LocalServiceGroup = $gslbGroupToLocalServiceGroup[$match.Groups['Group'].Value]
-            BindingLine       = $line
+            Name        = $match.Groups['Vserver'].Value
+            ServiceGroup = $match.Groups['Group'].Value
+            BindingLine = $line
         }
     }
 }
@@ -466,7 +471,6 @@ $gslbVservers = foreach ($binding in $gslbVserverBindings) {
         Name              = $binding.Name
         ServiceType       = if ($null -ne $definition -and $definition.Success) { $definition.Groups['ServiceType'].Value } else { $null }
         ServiceGroup      = $binding.ServiceGroup
-        LocalServiceGroup = $binding.LocalServiceGroup
         BindingLine       = $binding.BindingLine
         Line              = $definitionLine
     }
@@ -500,6 +504,11 @@ $monitors = foreach ($line in $lines) {
 $lbVserverNames = @(
     foreach ($line in $lines) {
         $match = [regex]::Match($line, '^\s*bind\s+lb\s+vserver\s+(?<Vserver>\S+)\s+(?<Service>\S+)', 'IgnoreCase')
+        if ($match.Success -and $match.Groups['Service'].Value -in $serviceNames) {
+            $match.Groups['Vserver'].Value
+        }
+
+        $match = [regex]::Match($line, '^\s*bind\s+lb\s+vserver\s+(?<Vserver>\S+)\s+-serviceName\s+(?<Service>\S+)', 'IgnoreCase')
         if ($match.Success -and $match.Groups['Service'].Value -in $serviceNames) {
             $match.Groups['Vserver'].Value
         }
@@ -543,6 +552,20 @@ $peerServers = @(
                     Address                 = $peerServer.Address
                     Service                 = $boundService.Name
                     LoadBalancingVserver    = $serviceBinding.Groups['Vserver'].Value
+                }
+            }
+        }
+
+        $namedServiceBinding = [regex]::Match($line, '^\s*bind\s+lb\s+vserver\s+(?<Vserver>\S+)\s+-serviceName\s+(?<Service>\S+)', 'IgnoreCase')
+        if ($namedServiceBinding.Success -and $namedServiceBinding.Groups['Vserver'].Value -in $lbVserverNames) {
+            $boundService = $allServices | Where-Object { $_.Name -ieq $namedServiceBinding.Groups['Service'].Value } | Select-Object -First 1
+            if ($null -ne $boundService -and $boundService.Server -ine $server[0].Name) {
+                $peerServer = $allServers | Where-Object { $_.Name -ieq $boundService.Server } | Select-Object -First 1
+                [pscustomobject]@{
+                    Name                    = $boundService.Server
+                    Address                 = $peerServer.Address
+                    Service                 = $boundService.Name
+                    LoadBalancingVserver    = $namedServiceBinding.Groups['Vserver'].Value
                 }
             }
         }
@@ -597,7 +620,18 @@ foreach ($line in $lines) {
 
 $contentSwitchingVservers = foreach ($line in $lines) {
     $match = [regex]::Match($line, '^\s*bind\s+cs\s+vserver\s+(?<Vserver>\S+)\s+-policyName\s+(?<Policy>\S+)', 'IgnoreCase')
-    if ($match.Success -and $csPolicyActions.ContainsKey($match.Groups['Policy'].Value)) {
+    if ($match.Success) {
+        $action = $null
+        $targetLBVserver = Get-NetScalerOption -Line $line -Name 'targetLBVserver'
+        if ($csPolicyActions.ContainsKey($match.Groups['Policy'].Value)) {
+            $action = $csPolicyActions[$match.Groups['Policy'].Value]
+            $targetLBVserver = $csActionTargets[$action]
+        }
+
+        if ($targetLBVserver -notin $lbVserverNames) {
+            continue
+        }
+
         $csVserverLine = $lines | Where-Object { $_ -match "^\s*add\s+cs\s+vserver\s+$([regex]::Escape($match.Groups['Vserver'].Value))\s+" } | Select-Object -First 1
         $csMatch = [regex]::Match($csVserverLine, '^\s*add\s+cs\s+vserver\s+(?<Name>\S+)\s+(?<Protocol>\S+)\s+(?<Address>\S+)\s+(?<Port>\d+)', 'IgnoreCase')
 
@@ -607,8 +641,8 @@ $contentSwitchingVservers = foreach ($line in $lines) {
             Address        = $csMatch.Groups['Address'].Value
             Port           = [int]$csMatch.Groups['Port'].Value
             Policy         = $match.Groups['Policy'].Value
-            Action         = $csPolicyActions[$match.Groups['Policy'].Value]
-            TargetLBVserver = $csActionTargets[$csPolicyActions[$match.Groups['Policy'].Value]]
+            Action         = $action
+            TargetLBVserver = $targetLBVserver
             Line           = $csVserverLine
         }
     }
