@@ -28,28 +28,32 @@ add service svc-api-02 api-app-02 SSL 443 -gslb NONE -maxClient 0 -maxReq 0 -cip
 bind lb vserver lbv-api-prod svc-api-02 -weight 30</pre></details>
 <h2>Services</h2>
 <p class="metadata">Direct service objects that point to the selected backend server.</p>
-<table><thead><tr><th>Name</th><th>Protocol / port</th></tr></thead><tbody><tr><td>svc-api-01</td><td>SSL/443</td></tr></tbody></table>
+<table><thead><tr><th>Name</th><th>Protocol</th><th>Port</th></tr></thead><tbody><tr><td>svc-api-01</td><td>SSL</td><td>443</td></tr></tbody></table>
 <details class="raw"><summary>Raw commands interpreted (1)</summary><pre>add service svc-api-01 api-app-01 SSL 443 -gslb NONE -maxClient 0 -maxReq 0 -cip DISABLED -usip NO -useproxyport YES -healthMonitor YES</pre></details>
 <h2>Service groups</h2>
 <p class="metadata">Load-balancing service groups that contain the selected backend server.</p>
-<table><thead><tr><th>Name</th><th>Member port</th></tr></thead><tbody><tr><td colspan="2" class="empty">(none)</td></tr></tbody></table>
+<table><thead><tr><th>Name</th><th>Member port</th><th>State</th></tr></thead><tbody><tr><td colspan="2" class="empty">(none)</td></tr></tbody></table>
 <p class="raw empty">Raw commands interpreted: (none)</p>
 <h2>Service-group SSL configuration</h2>
 <p class="metadata">TLS configuration applied to the selected server service groups.</p>
-<table><thead><tr><th>Configuration line</th></tr></thead><tbody><tr><td colspan="2" class="empty">(none)</td></tr></tbody></table>
+<table><thead><tr><th>Service group</th><th>Command</th><th>Purpose</th><th>Setting</th><th>Value</th></tr></thead><tbody><tr><td colspan="2" class="empty">(none)</td></tr></tbody></table>
 <p class="raw empty">Raw commands interpreted: (none)</p>
 <h2>Health monitors</h2>
 <p class="metadata">Health checks bound to the selected server services or service groups.</p>
-<table><thead><tr><th>Name</th><th>Type</th></tr></thead><tbody><tr><td>mon-https-health</td><td>HTTP</td></tr></tbody></table>
+<table><thead><tr><th>Name</th><th>Type</th><th>Bound to</th></tr></thead><tbody><tr><td>mon-https-health</td><td>HTTP</td><td>service svc-api-01</td></tr></tbody></table>
 <details class="raw"><summary>Raw commands interpreted (2)</summary><pre>add lb monitor mon-https-health HTTP -secure YES -destPort 443 -httpRequest &quot;GET /health HTTP/1.1\r\nHost: api.example.test\r\nConnection: close\r\n\r\n&quot; -respCode 200 -interval 10 -resTimeOut 3 -retries 2
 bind service svc-api-01 -monitorName mon-https-health</pre></details>
 <h2>Load-balancing vServers</h2>
 <p class="metadata">Local virtual IP endpoints that distribute traffic to the selected backend.</p>
-<table><thead><tr><th>Name</th><th>VIP</th><th>Settings</th></tr></thead><tbody><tr><td>lbv-api-prod</td><td>SSL 192.0.2.21:443</td><td>method=ROUNDROBIN, persistence=SOURCEIP</td></tr></tbody></table>
+<table><thead><tr><th>Name</th><th>Protocol</th><th>Address</th><th>Port</th></tr></thead><tbody><tr><td>lbv-api-prod</td><td>SSL</td><td>192.0.2.21</td><td>443</td></tr></tbody></table>
+<table><thead><tr><th>Virtual server</th><th>Command</th><th>Purpose</th><th>Setting</th><th>Value</th></tr></thead><tbody><tr><td>lbv-api-prod</td><td>add</td><td>Creates the vServer with the listed option.</td><td>persistenceType</td><td>SOURCEIP</td></tr>
+<tr><td>lbv-api-prod</td><td>add</td><td>Creates the vServer with the listed option.</td><td>timeout</td><td>15</td></tr>
+<tr><td>lbv-api-prod</td><td>add</td><td>Creates the vServer with the listed option.</td><td>cltTimeout</td><td>180</td></tr>
+<tr><td>lbv-api-prod</td><td>add</td><td>Creates the vServer with the listed option.</td><td>lbMethod</td><td>ROUNDROBIN</td></tr></tbody></table>
 <details class="raw"><summary>Raw commands interpreted (1)</summary><pre>add lb vserver lbv-api-prod SSL 192.0.2.21 443 -persistenceType SOURCEIP -timeout 15 -cltTimeout 180 -lbMethod ROUNDROBIN</pre></details>
 <h2>Content-switching vServers</h2>
 <p class="metadata">Front-end virtual servers that use policies to route requests to discovered load-balancing vServers.</p>
-<table><thead><tr><th>Name</th><th>VIP</th><th>Route</th></tr></thead><tbody><tr><td>csv-prod</td><td>SSL 192.0.2.20:443</td><td>policy=cspol-api-path, action=csact-api, target=lbv-api-prod</td></tr></tbody></table>
+<table><thead><tr><th>Name</th><th>Protocol</th><th>Address</th><th>Port</th><th>Policy</th><th>Action</th><th>Target LB vServer</th></tr></thead><tbody><tr><td>csv-prod</td><td>SSL</td><td>192.0.2.20</td><td>443</td><td>cspol-api-path</td><td>csact-api</td><td>lbv-api-prod</td></tr></tbody></table>
 <details class="raw"><summary>Raw commands interpreted (4)</summary><pre>add cs vserver csv-prod SSL 192.0.2.20 443 -cltTimeout 180
 bind cs vserver csv-prod -policyName cspol-api-path -priority 100
 add cs policy cspol-api-path -rule &quot;HTTP.REQ.URL.STARTSWITH(\&quot;/api/\&quot;)&quot; -action csact-api
@@ -60,11 +64,11 @@ add cs action csact-api -targetLBVserver lbv-api-prod</pre></details>
 <p class="raw empty">Raw commands interpreted: (none)</p>
 <h2>GSLB service-group configuration</h2>
 <p class="metadata">Definitions and service types for the discovered global service groups.</p>
-<table><thead><tr><th>Name</th><th>Service type</th><th>Definition</th></tr></thead><tbody><tr><td colspan="2" class="empty">(none)</td></tr></tbody></table>
+<table><thead><tr><th>Name</th><th>Service type</th></tr></thead><tbody><tr><td colspan="2" class="empty">(none)</td></tr></tbody></table>
 <p class="raw empty">Raw commands interpreted: (none)</p>
 <h2>GSLB health monitors</h2>
 <p class="metadata">Health checks and monitor settings attached to discovered global service groups.</p>
-<table><thead><tr><th>Name</th><th>Type</th></tr></thead><tbody><tr><td colspan="2" class="empty">(none)</td></tr></tbody></table>
+<table><thead><tr><th>Name</th><th>Type</th><th>Bound to service group</th></tr></thead><tbody><tr><td colspan="2" class="empty">(none)</td></tr></tbody></table>
 <table><thead><tr><th>Monitor configuration</th></tr></thead><tbody><tr><td colspan="2" class="empty">(none)</td></tr></tbody></table>
 <p class="raw empty">Raw commands interpreted: (none)</p>
 <h2>GSLB vServers</h2>

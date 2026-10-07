@@ -65,6 +65,31 @@ function Get-NetScalerOption {
     }
 }
 
+function Get-NetScalerOptionPairs {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Line
+    )
+
+    $matches = [regex]::Matches($Line, '(?i)(?:^|\s)-(?<Name>\S+)\s+(?:"(?<DoubleQuoted>[^"]*)"|''(?<SingleQuoted>[^'']*)''|(?<Value>\S+))')
+    foreach ($match in $matches) {
+        $value = if ($match.Groups['DoubleQuoted'].Success) {
+            $match.Groups['DoubleQuoted'].Value
+        }
+        elseif ($match.Groups['SingleQuoted'].Success) {
+            $match.Groups['SingleQuoted'].Value
+        }
+        else {
+            $match.Groups['Value'].Value
+        }
+
+        [pscustomobject]@{
+            Name = $match.Groups['Name'].Value
+            Value = $value
+        }
+    }
+}
+
 function Get-UniqueSorted {
     param([object[]]$Items)
 
@@ -185,30 +210,32 @@ function ConvertTo-NetScalerReport {
     $report.Add('Service groups')
     $report.Add('--------------')
     $report.Add('Load-balancing service groups that contain the selected backend server.')
-    $serviceGroupRows = @($Dependency.ServiceGroups | Select-Object Name, Server, Port)
-    Add-NetScalerTextTable -Report $report -Rows $serviceGroupRows -Columns Name, Server, Port -MaxRows $MaxRowsPerSection
+    $serviceGroupRows = @($Dependency.ServiceGroups | Select-Object Name, Server, Port, State)
+    Add-NetScalerTextTable -Report $report -Rows $serviceGroupRows -Columns Name, Server, Port, State -MaxRows $MaxRowsPerSection
     Add-NetScalerRawCommands -Report $report -Commands @($Dependency.ServiceGroups | ForEach-Object { $_.Line }) -MaxRows $MaxRowsPerSection
 
     $report.Add('')
     $report.Add('Service-group SSL configuration')
     $report.Add('-------------------------------')
     $report.Add('TLS configuration applied to the selected server service groups.')
-    Add-NetScalerBoundedLines -Report $report -Lines @($Dependency.ServiceGroupSslConfiguration | ForEach-Object { $_.Line }) -MaxRows $MaxRowsPerSection
+    Add-NetScalerTextTable -Report $report -Rows @($Dependency.ServiceGroupSslConfiguration) -Columns ServiceGroup, Command, Purpose, Setting, Value -MaxRows $MaxRowsPerSection
     Add-NetScalerRawCommands -Report $report -Commands @($Dependency.ServiceGroupSslConfiguration | ForEach-Object { $_.Line }) -MaxRows $MaxRowsPerSection
 
     $report.Add('')
     $report.Add('Health monitors')
     $report.Add('---------------')
     $report.Add('Health checks bound to the selected server services or service groups.')
-    Add-NetScalerTextTable -Report $report -Rows @($Dependency.Monitors) -Columns Name, Type -MaxRows $MaxRowsPerSection
+    Add-NetScalerTextTable -Report $report -Rows @($Dependency.Monitors) -Columns Name, Type, BoundTo -MaxRows $MaxRowsPerSection
     Add-NetScalerRawCommands -Report $report -Commands @($Dependency.Monitors | ForEach-Object { $_.Line }; $Dependency.MonitorBindingLines) -MaxRows $MaxRowsPerSection
 
     $report.Add('')
     $report.Add('Load-balancing vServers')
     $report.Add('------------------------')
     $report.Add('Local virtual IP endpoints that distribute traffic to the selected backend.')
-    Add-NetScalerTextTable -Report $report -Rows @($Dependency.LoadBalancingVservers) -Columns Name, Protocol, Address, Port, LoadMethod, Persistence -MaxRows $MaxRowsPerSection
-    Add-NetScalerRawCommands -Report $report -Commands @($Dependency.LoadBalancingVservers | ForEach-Object { $_.Line }) -MaxRows $MaxRowsPerSection
+    Add-NetScalerTextTable -Report $report -Rows @($Dependency.LoadBalancingVservers) -Columns Name, Protocol, Address, Port -MaxRows $MaxRowsPerSection
+    $report.Add('Explicit vServer configuration:')
+    Add-NetScalerTextTable -Report $report -Rows @($Dependency.LoadBalancingVserverConfiguration) -Columns Vserver, Command, Purpose, Setting, Value -MaxRows $MaxRowsPerSection
+    Add-NetScalerRawCommands -Report $report -Commands @($Dependency.LoadBalancingVservers | ForEach-Object { $_.Line }; $Dependency.LoadBalancingVserverConfiguration | ForEach-Object { $_.Line }) -MaxRows $MaxRowsPerSection
 
     $report.Add('')
     $report.Add('Content-switching vServers')
@@ -245,7 +272,7 @@ function ConvertTo-NetScalerReport {
     $report.Add('GSLB health monitors')
     $report.Add('--------------------')
     $report.Add('Health checks and monitor settings attached to discovered global service groups.')
-    Add-NetScalerTextTable -Report $report -Rows @($Dependency.GslbMonitors) -Columns Name, Type -MaxRows $MaxRowsPerSection
+    Add-NetScalerTextTable -Report $report -Rows @($Dependency.GslbMonitors) -Columns Name, Type, BoundTo -MaxRows $MaxRowsPerSection
     $report.Add('GSLB monitor configuration:')
     Add-NetScalerBoundedLines -Report $report -Lines @($Dependency.GslbMonitorConfiguration | ForEach-Object { $_.Line }) -MaxRows $MaxRowsPerSection
     Add-NetScalerRawCommands -Report $report -Commands @($Dependency.GslbMonitorConfiguration | ForEach-Object { $_.Line }; $Dependency.GslbMonitorBindingLines) -MaxRows $MaxRowsPerSection
@@ -355,43 +382,41 @@ function ConvertTo-NetScalerHtmlReport {
     }
     $serviceRows = ConvertTo-HtmlRows -Items @($Dependency.Services) -Row {
         param($service)
-        "<tr><td>$(ConvertTo-HtmlText $service.Name)</td><td>$(ConvertTo-HtmlText "$($service.Protocol)/$($service.Port)")</td></tr>"
+        "<tr><td>$(ConvertTo-HtmlText $service.Name)</td><td>$(ConvertTo-HtmlText $service.Protocol)</td><td>$(ConvertTo-HtmlText $service.Port)</td></tr>"
     }
     $serviceGroupRows = ConvertTo-HtmlRows -Items @($Dependency.ServiceGroups) -Row {
         param($serviceGroup)
-        $port = if ($null -eq $serviceGroup.Port) { '' } else { ":$($serviceGroup.Port)" }
-        "<tr><td>$(ConvertTo-HtmlText $serviceGroup.Name)</td><td>$(ConvertTo-HtmlText $port)</td></tr>"
+        $port = if ($null -eq $serviceGroup.Port) { '' } else { $serviceGroup.Port }
+        "<tr><td>$(ConvertTo-HtmlText $serviceGroup.Name)</td><td>$(ConvertTo-HtmlText $port)</td><td>$(ConvertTo-HtmlText $serviceGroup.State)</td></tr>"
     }
     $serviceGroupSslRows = ConvertTo-HtmlRows -Items @($Dependency.ServiceGroupSslConfiguration) -Row {
         param($sslConfiguration)
-        "<tr><td><code>$(ConvertTo-HtmlText $sslConfiguration.Line)</code></td></tr>"
+        "<tr><td>$(ConvertTo-HtmlText $sslConfiguration.ServiceGroup)</td><td>$(ConvertTo-HtmlText $sslConfiguration.Command)</td><td>$(ConvertTo-HtmlText $sslConfiguration.Purpose)</td><td>$(ConvertTo-HtmlText $sslConfiguration.Setting)</td><td>$(ConvertTo-HtmlText $sslConfiguration.Value)</td></tr>"
     }
     $monitorRows = ConvertTo-HtmlRows -Items @($Dependency.Monitors) -Row {
         param($monitor)
-        "<tr><td>$(ConvertTo-HtmlText $monitor.Name)</td><td>$(ConvertTo-HtmlText $monitor.Type)</td></tr>"
+        "<tr><td>$(ConvertTo-HtmlText $monitor.Name)</td><td>$(ConvertTo-HtmlText $monitor.Type)</td><td>$(ConvertTo-HtmlText $monitor.BoundTo)</td></tr>"
     }
     $lbVserverRows = ConvertTo-HtmlRows -Items @($Dependency.LoadBalancingVservers) -Row {
         param($vserver)
-        $settings = @()
-        if ($vserver.LoadMethod) { $settings += "method=$($vserver.LoadMethod)" }
-        if ($vserver.Persistence) { $settings += "persistence=$($vserver.Persistence)" }
-        $endpoint = "$($vserver.Protocol) $($vserver.Address):$($vserver.Port)"
-        "<tr><td>$(ConvertTo-HtmlText $vserver.Name)</td><td>$(ConvertTo-HtmlText $endpoint)</td><td>$(ConvertTo-HtmlText ($settings -join ', '))</td></tr>"
+        "<tr><td>$(ConvertTo-HtmlText $vserver.Name)</td><td>$(ConvertTo-HtmlText $vserver.Protocol)</td><td>$(ConvertTo-HtmlText $vserver.Address)</td><td>$(ConvertTo-HtmlText $vserver.Port)</td></tr>"
+    }
+    $lbVserverConfigurationRows = ConvertTo-HtmlRows -Items @($Dependency.LoadBalancingVserverConfiguration) -Row {
+        param($configuration)
+        "<tr><td>$(ConvertTo-HtmlText $configuration.Vserver)</td><td>$(ConvertTo-HtmlText $configuration.Command)</td><td>$(ConvertTo-HtmlText $configuration.Purpose)</td><td>$(ConvertTo-HtmlText $configuration.Setting)</td><td>$(ConvertTo-HtmlText $configuration.Value)</td></tr>"
     }
     $csVserverRows = ConvertTo-HtmlRows -Items @($Dependency.ContentSwitchingVservers) -Row {
         param($vserver)
-        $endpoint = "$($vserver.Protocol) $($vserver.Address):$($vserver.Port)"
-        $route = "policy=$($vserver.Policy), action=$($vserver.Action), target=$($vserver.TargetLBVserver)"
-        "<tr><td>$(ConvertTo-HtmlText $vserver.Name)</td><td>$(ConvertTo-HtmlText $endpoint)</td><td>$(ConvertTo-HtmlText $route)</td></tr>"
+        "<tr><td>$(ConvertTo-HtmlText $vserver.Name)</td><td>$(ConvertTo-HtmlText $vserver.Protocol)</td><td>$(ConvertTo-HtmlText $vserver.Address)</td><td>$(ConvertTo-HtmlText $vserver.Port)</td><td>$(ConvertTo-HtmlText $vserver.Policy)</td><td>$(ConvertTo-HtmlText $vserver.Action)</td><td>$(ConvertTo-HtmlText $vserver.TargetLBVserver)</td></tr>"
     }
     $gslbMemberRows = ConvertTo-HtmlRows -Items @($Dependency.GslbServiceGroupMembers) -Row {
         param($member)
-        $publicEndpoint = if ($member.PublicIp) { "$($member.PublicIp):$($member.PublicPort)" } else { '' }
+        $publicEndpoint = if ($member.PublicIp -and $member.PublicPort) { "$($member.PublicIp):$($member.PublicPort)" } elseif ($member.PublicIp) { $member.PublicIp } else { '' }
         "<tr><td>$(ConvertTo-HtmlText $member.GslbServiceGroup)</td><td>$(ConvertTo-HtmlText "$($member.Address):$($member.Port)")</td><td>$(ConvertTo-HtmlText $publicEndpoint)</td><td>$(ConvertTo-HtmlText ($member.DiscoveryLoadBalancingVservers -join ', '))</td></tr>"
     }
     $gslbServiceGroupRows = ConvertTo-HtmlRows -Items @($Dependency.GslbServiceGroups) -Row {
         param($serviceGroup)
-        "<tr><td>$(ConvertTo-HtmlText $serviceGroup.Name)</td><td>$(ConvertTo-HtmlText $serviceGroup.ServiceType)</td><td><code>$(ConvertTo-HtmlText $serviceGroup.Line)</code></td></tr>"
+        "<tr><td>$(ConvertTo-HtmlText $serviceGroup.Name)</td><td>$(ConvertTo-HtmlText $serviceGroup.ServiceType)</td></tr>"
     }
     $gslbVserverRows = ConvertTo-HtmlRows -Items @($Dependency.GslbVservers) -Row {
         param($vserver)
@@ -403,7 +428,7 @@ function ConvertTo-NetScalerHtmlReport {
     }
     $gslbMonitorRows = ConvertTo-HtmlRows -Items @($Dependency.GslbMonitors) -Row {
         param($monitor)
-        "<tr><td>$(ConvertTo-HtmlText $monitor.Name)</td><td>$(ConvertTo-HtmlText $monitor.Type)</td></tr>"
+        "<tr><td>$(ConvertTo-HtmlText $monitor.Name)</td><td>$(ConvertTo-HtmlText $monitor.Type)</td><td>$(ConvertTo-HtmlText $monitor.BoundTo)</td></tr>"
     }
     $gslbMonitorConfigurationRows = ConvertTo-HtmlRows -Items @($Dependency.GslbMonitorConfiguration) -Row {
         param($configuration)
@@ -427,7 +452,7 @@ function ConvertTo-NetScalerHtmlReport {
     $serviceGroupRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.ServiceGroups | ForEach-Object { $_.Line })
     $serviceGroupSslRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.ServiceGroupSslConfiguration | ForEach-Object { $_.Line })
     $monitorRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.Monitors | ForEach-Object { $_.Line }; $Dependency.MonitorBindingLines)
-    $lbVserverRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.LoadBalancingVservers | ForEach-Object { $_.Line })
+    $lbVserverRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.LoadBalancingVservers | ForEach-Object { $_.Line }; $Dependency.LoadBalancingVserverConfiguration | ForEach-Object { $_.Line })
     $csVserverRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.ContentSwitchingVservers | ForEach-Object { $_.RawCommands })
     $gslbMemberRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.GslbServiceGroupMembers | ForEach-Object { $_.Line })
     $gslbServiceGroupRawCommands = ConvertTo-HtmlRawCommands -Commands @($Dependency.GslbServiceGroups | ForEach-Object { $_.Line })
@@ -466,27 +491,28 @@ $serverRawCommands
 $peerServerRawCommands
 <h2>Services</h2>
 <p class="metadata">Direct service objects that point to the selected backend server.</p>
-<table><thead><tr><th>Name</th><th>Protocol / port</th></tr></thead><tbody>$serviceRows</tbody></table>
+<table><thead><tr><th>Name</th><th>Protocol</th><th>Port</th></tr></thead><tbody>$serviceRows</tbody></table>
 $serviceRawCommands
 <h2>Service groups</h2>
 <p class="metadata">Load-balancing service groups that contain the selected backend server.</p>
-<table><thead><tr><th>Name</th><th>Member port</th></tr></thead><tbody>$serviceGroupRows</tbody></table>
+<table><thead><tr><th>Name</th><th>Member port</th><th>State</th></tr></thead><tbody>$serviceGroupRows</tbody></table>
 $serviceGroupRawCommands
 <h2>Service-group SSL configuration</h2>
 <p class="metadata">TLS configuration applied to the selected server service groups.</p>
-<table><thead><tr><th>Configuration line</th></tr></thead><tbody>$serviceGroupSslRows</tbody></table>
+<table><thead><tr><th>Service group</th><th>Command</th><th>Purpose</th><th>Setting</th><th>Value</th></tr></thead><tbody>$serviceGroupSslRows</tbody></table>
 $serviceGroupSslRawCommands
 <h2>Health monitors</h2>
 <p class="metadata">Health checks bound to the selected server services or service groups.</p>
-<table><thead><tr><th>Name</th><th>Type</th></tr></thead><tbody>$monitorRows</tbody></table>
+<table><thead><tr><th>Name</th><th>Type</th><th>Bound to</th></tr></thead><tbody>$monitorRows</tbody></table>
 $monitorRawCommands
 <h2>Load-balancing vServers</h2>
 <p class="metadata">Local virtual IP endpoints that distribute traffic to the selected backend.</p>
-<table><thead><tr><th>Name</th><th>VIP</th><th>Settings</th></tr></thead><tbody>$lbVserverRows</tbody></table>
+<table><thead><tr><th>Name</th><th>Protocol</th><th>Address</th><th>Port</th></tr></thead><tbody>$lbVserverRows</tbody></table>
+<table><thead><tr><th>Virtual server</th><th>Command</th><th>Purpose</th><th>Setting</th><th>Value</th></tr></thead><tbody>$lbVserverConfigurationRows</tbody></table>
 $lbVserverRawCommands
 <h2>Content-switching vServers</h2>
 <p class="metadata">Front-end virtual servers that use policies to route requests to discovered load-balancing vServers.</p>
-<table><thead><tr><th>Name</th><th>VIP</th><th>Route</th></tr></thead><tbody>$csVserverRows</tbody></table>
+<table><thead><tr><th>Name</th><th>Protocol</th><th>Address</th><th>Port</th><th>Policy</th><th>Action</th><th>Target LB vServer</th></tr></thead><tbody>$csVserverRows</tbody></table>
 $csVserverRawCommands
 <h2>GSLB service-group members</h2>
 <p class="metadata">Global service endpoints correlated from discovered local load-balancing VIP and port pairs.</p>
@@ -494,11 +520,11 @@ $csVserverRawCommands
 $gslbMemberRawCommands
 <h2>GSLB service-group configuration</h2>
 <p class="metadata">Definitions and service types for the discovered global service groups.</p>
-<table><thead><tr><th>Name</th><th>Service type</th><th>Definition</th></tr></thead><tbody>$gslbServiceGroupRows</tbody></table>
+<table><thead><tr><th>Name</th><th>Service type</th></tr></thead><tbody>$gslbServiceGroupRows</tbody></table>
 $gslbServiceGroupRawCommands
 <h2>GSLB health monitors</h2>
 <p class="metadata">Health checks and monitor settings attached to discovered global service groups.</p>
-<table><thead><tr><th>Name</th><th>Type</th></tr></thead><tbody>$gslbMonitorRows</tbody></table>
+<table><thead><tr><th>Name</th><th>Type</th><th>Bound to service group</th></tr></thead><tbody>$gslbMonitorRows</tbody></table>
 <table><thead><tr><th>Monitor configuration</th></tr></thead><tbody>$gslbMonitorConfigurationRows</tbody></table>
 $gslbMonitorRawCommands
 <h2>GSLB vServers</h2>
@@ -573,6 +599,7 @@ $allServiceGroupMembers = foreach ($line in $lines) {
             Name = $match.Groups['Group'].Value
             Server = $match.Groups['Server'].Value
             Port = if ($match.Groups['Port'].Success) { [int]$match.Groups['Port'].Value } else { $null }
+            State = Get-NetScalerOption -Line $line -Name 'state'
             Line = $line
         }
     }
@@ -583,39 +610,78 @@ $serviceNames = Get-UniqueSorted @($services | ForEach-Object { $_.Name })
 $serviceGroupNames = Get-UniqueSorted @($serviceGroupMembers | ForEach-Object { $_.Name })
 
 $serviceGroupSslConfiguration = foreach ($line in $lines) {
-    $match = [regex]::Match($line, '^\s*(?:add\s+serviceGroup|set\s+ssl\s+serviceGroup|bind\s+ssl\s+serviceGroup)\s+(?<Group>\S+)', 'IgnoreCase')
-    if ($match.Success -and $match.Groups['Group'].Value -in $serviceGroupNames) {
+    $serviceGroupDefinition = [regex]::Match($line, '^\s*add\s+serviceGroup\s+(?<Group>\S+)\s+(?<ServiceType>\S+)', 'IgnoreCase')
+    if ($serviceGroupDefinition.Success -and $serviceGroupDefinition.Groups['Group'].Value -in $serviceGroupNames) {
         [pscustomobject]@{
-            ServiceGroup = $match.Groups['Group'].Value
+            ServiceGroup = $serviceGroupDefinition.Groups['Group'].Value
+            Command      = 'add'
+            Purpose      = 'Defines the service group and its service type.'
+            Setting      = 'serviceType'
+            Value        = $serviceGroupDefinition.Groups['ServiceType'].Value
             Line         = $line
+        }
+        continue
+    }
+
+    $sslConfiguration = [regex]::Match($line, '^\s*(?<Command>set|bind)\s+ssl\s+serviceGroup\s+(?<Group>\S+)', 'IgnoreCase')
+    if ($sslConfiguration.Success -and $sslConfiguration.Groups['Group'].Value -in $serviceGroupNames) {
+        foreach ($option in (Get-NetScalerOptionPairs -Line $line)) {
+            [pscustomobject]@{
+                ServiceGroup = $sslConfiguration.Groups['Group'].Value
+                Command      = $sslConfiguration.Groups['Command'].Value.ToLowerInvariant()
+                Purpose      = if ($sslConfiguration.Groups['Command'].Value -ieq 'set') {
+                    'Sets an SSL/TLS property for the service group.'
+                }
+                else {
+                    'Binds an SSL/TLS resource to the service group.'
+                }
+                Setting      = $option.Name
+                Value        = $option.Value
+                Line         = $line
+            }
         }
     }
 }
 
-$monitorBindingLines = @()
-$monitorNames = @(
+$monitorBindings = @(
     foreach ($line in $lines) {
         $match = [regex]::Match($line, '^\s*bind\s+service\s+(?<Service>\S+)\s+-monitorName\s+(?<Monitor>\S+)', 'IgnoreCase')
         if ($match.Success -and $match.Groups['Service'].Value -in $serviceNames) {
-            $monitorBindingLines += $line
-            $match.Groups['Monitor'].Value
+            [pscustomobject]@{
+                Monitor = $match.Groups['Monitor'].Value
+                BoundTo = "service $($match.Groups['Service'].Value)"
+                Line    = $line
+            }
         }
 
         $match = [regex]::Match($line, '^\s*bind\s+serviceGroup\s+(?<Group>\S+)\s+-monitorName\s+(?<Monitor>\S+)', 'IgnoreCase')
         if ($match.Success -and $match.Groups['Group'].Value -in $serviceGroupNames) {
-            $monitorBindingLines += $line
-            $match.Groups['Monitor'].Value
+            [pscustomobject]@{
+                Monitor = $match.Groups['Monitor'].Value
+                BoundTo = "service group $($match.Groups['Group'].Value)"
+                Line    = $line
+            }
         }
     }
-) | Sort-Object -Unique
+)
+$monitorBindingLines = @($monitorBindings | ForEach-Object { $_.Line })
+$monitorNames = Get-UniqueSorted @($monitorBindings | ForEach-Object { $_.Monitor })
+$monitorTargetsByName = @{}
+foreach ($binding in $monitorBindings) {
+    if (-not $monitorTargetsByName.ContainsKey($binding.Monitor)) {
+        $monitorTargetsByName[$binding.Monitor] = [System.Collections.Generic.List[string]]::new()
+    }
+    $monitorTargetsByName[$binding.Monitor].Add($binding.BoundTo)
+}
 
 $monitors = foreach ($line in $lines) {
     $match = [regex]::Match($line, '^\s*add\s+lb\s+monitor\s+(?<Name>\S+)\s+(?<Type>\S+)', 'IgnoreCase')
     if ($match.Success -and $match.Groups['Name'].Value -in $monitorNames) {
         [pscustomobject]@{
-            Name = $match.Groups['Name'].Value
-            Type = $match.Groups['Type'].Value
-            Line = $line
+            Name    = $match.Groups['Name'].Value
+            Type    = $match.Groups['Type'].Value
+            BoundTo = (Get-UniqueSorted @($monitorTargetsByName[$match.Groups['Name'].Value]) -join ', ')
+            Line    = $line
         }
     }
 }
@@ -658,14 +724,55 @@ $lbVservers = foreach ($line in $lines) {
         }
     }
 }
+$lbVserverConfiguration = @(
+    foreach ($vserver in $lbVservers) {
+        foreach ($option in (Get-NetScalerOptionPairs -Line $vserver.Line)) {
+            [pscustomobject]@{
+                Vserver = $vserver.Name
+                Command = 'add'
+                Purpose = 'Creates the vServer with the listed option.'
+                Setting = $option.Name
+                Value   = $option.Value
+                Line    = $vserver.Line
+            }
+        }
+    }
+
+    foreach ($line in $lines) {
+        $match = [regex]::Match($line, '^\s*set\s+lb\s+vserver\s+(?<Vserver>\S+)', 'IgnoreCase')
+        if ($match.Success -and $match.Groups['Vserver'].Value -in $lbVserverNames) {
+            foreach ($option in (Get-NetScalerOptionPairs -Line $line)) {
+                [pscustomobject]@{
+                    Vserver = $match.Groups['Vserver'].Value
+                    Command = 'set'
+                    Purpose = 'Updates a vServer option.'
+                    Setting = $option.Name
+                    Value   = $option.Value
+                    Line    = $line
+                }
+            }
+        }
+    }
+)
+$lbVserversByEndpoint = @{}
+foreach ($vserver in $lbVservers) {
+    $endpointKey = "$($vserver.Address)|$($vserver.Port)"
+    if (-not $lbVserversByEndpoint.ContainsKey($endpointKey)) {
+        $lbVserversByEndpoint[$endpointKey] = [System.Collections.Generic.List[string]]::new()
+    }
+    $lbVserversByEndpoint[$endpointKey].Add($vserver.Name)
+}
 
 $gslbServiceGroupDiscoveries = @(
     foreach ($line in $lines) {
         $match = [regex]::Match($line, '^\s*bind\s+gslb\s+serviceGroup\s+(?<Group>\S+)\s+(?<Address>\S+)\s+(?<Port>\d+)', 'IgnoreCase')
         if ($match.Success) {
-            $matchingVservers = @($lbVservers | Where-Object {
-                    $_.Address -eq $match.Groups['Address'].Value -and $_.Port -eq [int]$match.Groups['Port'].Value
-                } | ForEach-Object { $_.Name })
+            $endpointKey = "$($match.Groups['Address'].Value)|$([int]$match.Groups['Port'].Value)"
+            $matchingVservers = @(
+                if ($lbVserversByEndpoint.ContainsKey($endpointKey)) {
+                    $lbVserversByEndpoint[$endpointKey]
+                }
+            )
             if ($matchingVservers.Count -gt 0) {
                 [pscustomobject]@{
                     Group                         = $match.Groups['Group'].Value
@@ -676,14 +783,6 @@ $gslbServiceGroupDiscoveries = @(
     }
 )
 $gslbServiceGroupNames = Get-UniqueSorted @($gslbServiceGroupDiscoveries | ForEach-Object { $_.Group })
-$gslbDiscoveryVserversByGroup = @{}
-foreach ($groupName in $gslbServiceGroupNames) {
-    $gslbDiscoveryVserversByGroup[$groupName] = Get-UniqueSorted @(
-        $gslbServiceGroupDiscoveries |
-            Where-Object { $_.Group -ieq $groupName } |
-            ForEach-Object { $_.LoadBalancingVservers }
-    )
-}
 
 $gslbServiceGroups = foreach ($line in $lines) {
     $match = [regex]::Match($line, '^\s*add\s+gslb\s+serviceGroup\s+(?<Name>\S+)\s+(?<ServiceType>\S+)', 'IgnoreCase')
@@ -699,13 +798,19 @@ $gslbServiceGroups = foreach ($line in $lines) {
 $gslbServiceGroupMembers = foreach ($line in $lines) {
     $match = [regex]::Match($line, '^\s*bind\s+gslb\s+serviceGroup\s+(?<Group>\S+)\s+(?<Address>\S+)\s+(?<Port>\d+)', 'IgnoreCase')
     if ($match.Success -and $match.Groups['Group'].Value -in $gslbServiceGroupNames) {
+        $endpointKey = "$($match.Groups['Address'].Value)|$([int]$match.Groups['Port'].Value)"
         [pscustomobject]@{
             GslbServiceGroup                = $match.Groups['Group'].Value
             Address                         = $match.Groups['Address'].Value
             Port                            = [int]$match.Groups['Port'].Value
             PublicIp                        = Get-NetScalerOption -Line $line -Name 'publicIP'
             PublicPort                      = Get-NetScalerOption -Line $line -Name 'publicPort'
-            DiscoveryLoadBalancingVservers  = $gslbDiscoveryVserversByGroup[$match.Groups['Group'].Value]
+            DiscoveryLoadBalancingVservers  = if ($lbVserversByEndpoint.ContainsKey($endpointKey)) {
+                Get-UniqueSorted @($lbVserversByEndpoint[$endpointKey])
+            }
+            else {
+                @()
+            }
             Line                            = $line
         }
     }
@@ -742,23 +847,35 @@ $gslbDomains = foreach ($line in $lines) {
     }
 }
 
-$gslbMonitorBindingLines = @()
-$gslbMonitorNames = @(
+$gslbMonitorBindings = @(
     foreach ($line in $lines) {
         $match = [regex]::Match($line, '^\s*bind\s+gslb\s+serviceGroup\s+(?<Group>\S+)\s+-monitorName\s+(?<Monitor>\S+)', 'IgnoreCase')
         if ($match.Success -and $match.Groups['Group'].Value -in $gslbServiceGroupNames) {
-            $gslbMonitorBindingLines += $line
-            $match.Groups['Monitor'].Value
+            [pscustomobject]@{
+                Monitor      = $match.Groups['Monitor'].Value
+                ServiceGroup = $match.Groups['Group'].Value
+                Line         = $line
+            }
         }
     }
-) | Sort-Object -Unique
+)
+$gslbMonitorBindingLines = @($gslbMonitorBindings | ForEach-Object { $_.Line })
+$gslbMonitorNames = Get-UniqueSorted @($gslbMonitorBindings | ForEach-Object { $_.Monitor })
+$gslbMonitorGroupsByName = @{}
+foreach ($binding in $gslbMonitorBindings) {
+    if (-not $gslbMonitorGroupsByName.ContainsKey($binding.Monitor)) {
+        $gslbMonitorGroupsByName[$binding.Monitor] = [System.Collections.Generic.List[string]]::new()
+    }
+    $gslbMonitorGroupsByName[$binding.Monitor].Add($binding.ServiceGroup)
+}
 $gslbMonitors = foreach ($line in $lines) {
     $match = [regex]::Match($line, '^\s*add\s+lb\s+monitor\s+(?<Name>\S+)\s+(?<Type>\S+)', 'IgnoreCase')
     if ($match.Success -and $match.Groups['Name'].Value -in $gslbMonitorNames) {
         [pscustomobject]@{
-            Name = $match.Groups['Name'].Value
-            Type = $match.Groups['Type'].Value
-            Line = $line
+            Name    = $match.Groups['Name'].Value
+            Type    = $match.Groups['Type'].Value
+            BoundTo = (Get-UniqueSorted @($gslbMonitorGroupsByName[$match.Groups['Name'].Value]) -join ', ')
+            Line    = $line
         }
     }
 }
@@ -925,6 +1042,7 @@ foreach ($item in @(
         $gslbMonitorConfiguration
         $monitors
         $lbVservers
+        $lbVserverConfiguration
         $contentSwitchingVservers
         $certificateBindings
     )) {
@@ -989,6 +1107,7 @@ $result = [pscustomobject]@{
     Monitors                = @($monitors)
     MonitorBindingLines      = @($monitorBindingLines)
     LoadBalancingVservers   = @($lbVservers)
+    LoadBalancingVserverConfiguration = @($lbVserverConfiguration)
     ContentSwitchingVservers = @($contentSwitchingVservers)
     Certificates            = @($certificateBindings)
     VserverBindings         = @($vserverBindings)
