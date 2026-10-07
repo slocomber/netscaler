@@ -169,6 +169,26 @@ function ConvertTo-NetScalerReport {
     }
 
     $report.Add('')
+    $report.Add('GSLB service-group configuration')
+    $report.Add('--------------------------------')
+    if ($Dependency.GslbServiceGroups.Count -eq 0) {
+        $report.Add('  (none)')
+    }
+    foreach ($serviceGroup in $Dependency.GslbServiceGroups) {
+        $report.Add("  $($serviceGroup.Name) ($($serviceGroup.ServiceType))")
+    }
+
+    $report.Add('')
+    $report.Add('GSLB health monitors')
+    $report.Add('--------------------')
+    if ($Dependency.GslbMonitors.Count -eq 0) {
+        $report.Add('  (none)')
+    }
+    foreach ($monitor in $Dependency.GslbMonitors) {
+        $report.Add("  $($monitor.Name) ($($monitor.Type))")
+    }
+
+    $report.Add('')
     $report.Add('GSLB vServers')
     $report.Add('-------------')
     if ($Dependency.GslbVservers.Count -eq 0) {
@@ -177,6 +197,16 @@ function ConvertTo-NetScalerReport {
     foreach ($vserver in $Dependency.GslbVservers) {
         $serviceType = if ($vserver.ServiceType) { " ($($vserver.ServiceType))" } else { '' }
         $report.Add("  $($vserver.Name)$serviceType -> $($vserver.ServiceGroup)")
+    }
+
+    $report.Add('')
+    $report.Add('GSLB domains')
+    $report.Add('------------')
+    if ($Dependency.GslbDomains.Count -eq 0) {
+        $report.Add('  (none)')
+    }
+    foreach ($domain in $Dependency.GslbDomains) {
+        $report.Add("  $($domain.Vserver): $($domain.Name)")
     }
 
     $report.Add('')
@@ -284,9 +314,21 @@ function ConvertTo-NetScalerHtmlReport {
         $publicEndpoint = if ($member.PublicIp) { "$($member.PublicIp):$($member.PublicPort)" } else { '' }
         "<tr><td>$(ConvertTo-HtmlText $member.GslbServiceGroup)</td><td>$(ConvertTo-HtmlText "$($member.Address):$($member.Port)")</td><td>$(ConvertTo-HtmlText $publicEndpoint)</td><td>$(ConvertTo-HtmlText ($member.DiscoveryLoadBalancingVservers -join ', '))</td></tr>"
     }
+    $gslbServiceGroupRows = ConvertTo-HtmlRows -Items @($Dependency.GslbServiceGroups) -Row {
+        param($serviceGroup)
+        "<tr><td>$(ConvertTo-HtmlText $serviceGroup.Name)</td><td>$(ConvertTo-HtmlText $serviceGroup.ServiceType)</td><td><code>$(ConvertTo-HtmlText $serviceGroup.Line)</code></td></tr>"
+    }
     $gslbVserverRows = ConvertTo-HtmlRows -Items @($Dependency.GslbVservers) -Row {
         param($vserver)
         "<tr><td>$(ConvertTo-HtmlText $vserver.Name)</td><td>$(ConvertTo-HtmlText $vserver.ServiceType)</td><td>$(ConvertTo-HtmlText $vserver.ServiceGroup)</td></tr>"
+    }
+    $gslbDomainRows = ConvertTo-HtmlRows -Items @($Dependency.GslbDomains) -Row {
+        param($domain)
+        "<tr><td>$(ConvertTo-HtmlText $domain.Vserver)</td><td>$(ConvertTo-HtmlText $domain.Name)</td></tr>"
+    }
+    $gslbMonitorRows = ConvertTo-HtmlRows -Items @($Dependency.GslbMonitors) -Row {
+        param($monitor)
+        "<tr><td>$(ConvertTo-HtmlText $monitor.Name)</td><td>$(ConvertTo-HtmlText $monitor.Type)</td></tr>"
     }
     $certificateRows = ConvertTo-HtmlRows -Items @($Dependency.Certificates) -Row {
         param($certificate)
@@ -338,8 +380,14 @@ th { background: #f3f4f6; } code { overflow-wrap: anywhere; } .empty { color: #6
 <table><thead><tr><th>Name</th><th>VIP</th><th>Route</th></tr></thead><tbody>$csVserverRows</tbody></table>
 <h2>GSLB service-group members</h2>
 <table><thead><tr><th>GSLB service group</th><th>Member endpoint</th><th>Public endpoint</th><th>Local LB vServers</th></tr></thead><tbody>$gslbMemberRows</tbody></table>
+<h2>GSLB service-group configuration</h2>
+<table><thead><tr><th>Name</th><th>Service type</th><th>Definition</th></tr></thead><tbody>$gslbServiceGroupRows</tbody></table>
+<h2>GSLB health monitors</h2>
+<table><thead><tr><th>Name</th><th>Type</th></tr></thead><tbody>$gslbMonitorRows</tbody></table>
 <h2>GSLB vServers</h2>
 <table><thead><tr><th>Name</th><th>Service type</th><th>GSLB service group</th></tr></thead><tbody>$gslbVserverRows</tbody></table>
+<h2>GSLB domains</h2>
+<table><thead><tr><th>GSLB vServer</th><th>Domain name</th></tr></thead><tbody>$gslbDomainRows</tbody></table>
 <h2>Certificate bindings</h2>
 <table><thead><tr><th>vServer</th><th>Certificate</th></tr></thead><tbody>$certificateRows</tbody></table>
 <h2>Relevant vServer bindings</h2>
@@ -509,6 +557,17 @@ foreach ($groupName in $gslbServiceGroupNames) {
     )
 }
 
+$gslbServiceGroups = foreach ($line in $lines) {
+    $match = [regex]::Match($line, '^\s*add\s+gslb\s+serviceGroup\s+(?<Name>\S+)\s+(?<ServiceType>\S+)', 'IgnoreCase')
+    if ($match.Success -and $match.Groups['Name'].Value -in $gslbServiceGroupNames) {
+        [pscustomobject]@{
+            Name        = $match.Groups['Name'].Value
+            ServiceType = $match.Groups['ServiceType'].Value
+            Line        = $line
+        }
+    }
+}
+
 $gslbServiceGroupMembers = foreach ($line in $lines) {
     $match = [regex]::Match($line, '^\s*bind\s+gslb\s+serviceGroup\s+(?<Group>\S+)\s+(?<Address>\S+)\s+(?<Port>\d+)', 'IgnoreCase')
     if ($match.Success -and $match.Groups['Group'].Value -in $gslbServiceGroupNames) {
@@ -540,6 +599,39 @@ $gslbVservers = foreach ($binding in $gslbVserverBindings) {
         ServiceGroup = $binding.ServiceGroup
         BindingLine = $binding.BindingLine
         Line = $definitionLine
+    }
+}
+
+$gslbVserverNames = Get-UniqueSorted @($gslbVservers | ForEach-Object { $_.Name })
+$gslbDomains = foreach ($line in $lines) {
+    $match = [regex]::Match($line, '^\s*bind\s+gslb\s+vserver\s+(?<Vserver>\S+)\s+-domainName\s+(?<Domain>\S+)', 'IgnoreCase')
+    if ($match.Success -and $match.Groups['Vserver'].Value -in $gslbVserverNames) {
+        [pscustomobject]@{
+            Vserver = $match.Groups['Vserver'].Value
+            Name    = $match.Groups['Domain'].Value
+            Line    = $line
+        }
+    }
+}
+
+$gslbMonitorBindingLines = @()
+$gslbMonitorNames = @(
+    foreach ($line in $lines) {
+        $match = [regex]::Match($line, '^\s*bind\s+gslb\s+serviceGroup\s+(?<Group>\S+)\s+-monitorName\s+(?<Monitor>\S+)', 'IgnoreCase')
+        if ($match.Success -and $match.Groups['Group'].Value -in $gslbServiceGroupNames) {
+            $gslbMonitorBindingLines += $line
+            $match.Groups['Monitor'].Value
+        }
+    }
+) | Sort-Object -Unique
+$gslbMonitors = foreach ($line in $lines) {
+    $match = [regex]::Match($line, '^\s*add\s+lb\s+monitor\s+(?<Name>\S+)\s+(?<Type>\S+)', 'IgnoreCase')
+    if ($match.Success -and $match.Groups['Name'].Value -in $gslbMonitorNames) {
+        [pscustomobject]@{
+            Name = $match.Groups['Name'].Value
+            Type = $match.Groups['Type'].Value
+            Line = $line
+        }
     }
 }
 
@@ -679,8 +771,11 @@ foreach ($item in @(
         $services
         $serviceGroupMembers
         $serviceGroupSslConfiguration
+        $gslbServiceGroups
         $gslbServiceGroupMembers
         $gslbVservers
+        $gslbDomains
+        $gslbMonitors
         $monitors
         $lbVservers
         $contentSwitchingVservers
@@ -696,6 +791,9 @@ foreach ($binding in $vserverBindings) {
 foreach ($binding in $monitorBindingLines) {
     [void]$processedLines.Add($binding)
 }
+foreach ($binding in $gslbMonitorBindingLines) {
+    [void]$processedLines.Add($binding)
+}
 foreach ($binding in $gslbVserverBindings) {
     [void]$processedLines.Add($binding.BindingLine)
 }
@@ -705,12 +803,15 @@ $relatedObjectNames = Get-UniqueSorted @(
     $serviceNames
     $serviceGroupNames
     $monitorNames
+    $gslbMonitorNames
     $lbVserverNames
     $peerServers | ForEach-Object { $_.Name }
     $contentSwitchingVservers | ForEach-Object { $_.Name; $_.Policy; $_.Action }
     $certificateBindings | ForEach-Object { $_.Certificate }
     $gslbServiceGroupMembers | ForEach-Object { $_.GslbServiceGroup }
+    $gslbServiceGroups | ForEach-Object { $_.Name }
     $gslbVservers | ForEach-Object { $_.Name; $_.ServiceGroup }
+    $gslbDomains | ForEach-Object { $_.Name }
 )
 $unprocessedRelevantLines = foreach ($line in $lines) {
     if ($processedLines.Contains($line)) {
@@ -731,8 +832,11 @@ $result = [pscustomobject]@{
     Services                = @($services)
     ServiceGroups           = @($serviceGroupMembers)
     ServiceGroupSslConfiguration = @($serviceGroupSslConfiguration)
+    GslbServiceGroups        = @($gslbServiceGroups)
     GslbServiceGroupMembers = @($gslbServiceGroupMembers)
     GslbVservers            = @($gslbVservers)
+    GslbDomains              = @($gslbDomains)
+    GslbMonitors             = @($gslbMonitors)
     Monitors                = @($monitors)
     LoadBalancingVservers   = @($lbVservers)
     ContentSwitchingVservers = @($contentSwitchingVservers)
