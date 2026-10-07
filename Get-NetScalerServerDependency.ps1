@@ -308,7 +308,7 @@ function ConvertTo-NetScalerReport {
     $report.Add('Relevant vServer bindings')
     $report.Add('-------------------------')
     $report.Add('Additional bindings associated with discovered local and content-switching virtual servers.')
-    Add-NetScalerBoundedLines -Report $report -Lines @($Dependency.VserverBindings) -MaxRows $MaxRowsPerSection
+    Add-NetScalerTextTable -Report $report -Rows @($Dependency.VserverBindingDetails) -Columns Vserver, VserverType, BindingType, Target, Priority, State -MaxRows $MaxRowsPerSection
     Add-NetScalerRawCommands -Report $report -Commands @($Dependency.VserverBindings) -MaxRows $MaxRowsPerSection
 
     $report.Add('')
@@ -455,9 +455,9 @@ function ConvertTo-NetScalerHtmlReport {
         $rowClass = if ($certificate.IsDisabled) { ' class="disabled"' } else { '' }
         "<tr$rowClass><td>$(ConvertTo-HtmlText $certificate.Vserver)</td><td>$(ConvertTo-HtmlText $certificate.Certificate)</td></tr>"
     }
-    $bindingRows = ConvertTo-HtmlRows -Items @($Dependency.VserverBindings) -Row {
+    $bindingRows = ConvertTo-HtmlRows -Items @($Dependency.VserverBindingDetails) -Row {
         param($binding)
-        "<tr><td colspan=""2""><code>$(ConvertTo-HtmlText $binding)</code></td></tr>"
+        "<tr><td>$(ConvertTo-HtmlText $binding.Vserver)</td><td>$(ConvertTo-HtmlText $binding.VserverType)</td><td>$(ConvertTo-HtmlText $binding.BindingType)</td><td>$(ConvertTo-HtmlText $binding.Target)</td><td>$(ConvertTo-HtmlText $binding.Priority)</td><td>$(ConvertTo-HtmlText $binding.State)</td></tr>"
     }
     $unprocessedLineRows = ConvertTo-HtmlRows -Items @($Dependency.UnprocessedRelevantLines) -Row {
         param($line)
@@ -558,7 +558,7 @@ $gslbDomainRawCommands
 $certificateRawCommands
 <h2>Relevant vServer bindings</h2>
 <p class="metadata">Additional bindings associated with discovered local and content-switching virtual servers.</p>
-<table><thead><tr><th>Binding</th></tr></thead><tbody>$bindingRows</tbody></table>
+<table><thead><tr><th>vServer</th><th>Type</th><th>Binding type</th><th>Target</th><th>Priority</th><th>State</th></tr></thead><tbody>$bindingRows</tbody></table>
 $bindingRawCommands
 <h2>Unprocessed lines for all discovered objects</h2>
 <p class="metadata">Related commands retained for inspection because this report does not interpret them.</p>
@@ -1084,6 +1084,50 @@ $vserverBindings = foreach ($line in $lines) {
         $line
     }
 }
+$vserverBindingDetails = foreach ($line in $vserverBindings) {
+    $match = [regex]::Match($line, '^\s*bind\s+(?<VserverType>lb|cs)\s+vserver\s+(?<Vserver>\S+)(?:\s+(?<PositionalTarget>(?!-)\S+))?', 'IgnoreCase')
+    $serviceName = Get-NetScalerOption -Line $line -Name 'serviceName'
+    $serviceGroupName = Get-NetScalerOption -Line $line -Name 'serviceGroupName'
+    $policyName = Get-NetScalerOption -Line $line -Name 'policyName'
+    $positionalTarget = $match.Groups['PositionalTarget'].Value
+
+    $bindingType = 'other'
+    $target = ''
+    if ($serviceName) {
+        $bindingType = 'service'
+        $target = $serviceName
+    }
+    elseif ($serviceGroupName) {
+        $bindingType = 'service group'
+        $target = $serviceGroupName
+    }
+    elseif ($policyName) {
+        $bindingType = 'policy'
+        $target = $policyName
+    }
+    elseif ($positionalTarget -in $serviceNames) {
+        $bindingType = 'service'
+        $target = $positionalTarget
+    }
+    elseif ($positionalTarget -in $serviceGroupNames) {
+        $bindingType = 'service group'
+        $target = $positionalTarget
+    }
+    elseif ($positionalTarget) {
+        $bindingType = 'target'
+        $target = $positionalTarget
+    }
+
+    [pscustomobject]@{
+        Vserver     = $match.Groups['Vserver'].Value
+        VserverType = $match.Groups['VserverType'].Value.ToUpperInvariant()
+        BindingType = $bindingType
+        Target      = $target
+        Priority    = Get-NetScalerOption -Line $line -Name 'priority'
+        State       = Get-NetScalerOption -Line $line -Name 'state'
+        Line        = $line
+    }
+}
 
 $certificateBindings = foreach ($line in $lines) {
     $match = [regex]::Match($line, '^\s*bind\s+ssl\s+vserver\s+(?<Vserver>\S+)\s+-certkeyName\s+(?<Certificate>\S+)', 'IgnoreCase')
@@ -1180,6 +1224,7 @@ $result = [pscustomobject]@{
     ContentSwitchingVservers = @($contentSwitchingVservers)
     Certificates            = @($certificateBindings)
     VserverBindings         = @($vserverBindings)
+    VserverBindingDetails   = @($vserverBindingDetails)
     UnprocessedRelevantLines = @($unprocessedRelevantLines)
 }
 
