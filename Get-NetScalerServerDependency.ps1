@@ -830,6 +830,12 @@ $gslbServiceGroupDiscoveries = @(
     }
 )
 $gslbServiceGroupNames = Get-UniqueSorted @($gslbServiceGroupDiscoveries | ForEach-Object { $_.Group })
+$gslbServiceGroupBindingLines = foreach ($line in $lines) {
+    $match = [regex]::Match($line, '^\s*bind\s+gslb\s+serviceGroup\s+(?<Group>\S+)', 'IgnoreCase')
+    if ($match.Success -and $match.Groups['Group'].Value -in $gslbServiceGroupNames) {
+        $line
+    }
+}
 
 $gslbServiceGroups = foreach ($line in $lines) {
     $match = [regex]::Match($line, '^\s*add\s+gslb\s+serviceGroup\s+(?<Name>\S+)\s+(?<ServiceType>\S+)', 'IgnoreCase')
@@ -871,15 +877,23 @@ $gslbServiceGroupMembers = foreach ($line in $lines) {
     }
 }
 
+$gslbVserverDefinitionsByName = @{}
+foreach ($line in $lines) {
+    $match = [regex]::Match($line, '^\s*add\s+gslb\s+vserver\s+(?<Name>\S+)\s+(?<ServiceType>\S+)', 'IgnoreCase')
+    if ($match.Success) {
+        $gslbVserverDefinitionsByName[$match.Groups['Name'].Value] = $line
+    }
+}
 $gslbVserverBindings = foreach ($line in $lines) {
-    $match = [regex]::Match($line, '^\s*bind\s+gslb\s+vserver\s+(?<Vserver>\S+)\s+-serviceGroupName\s+(?<Group>\S+)', 'IgnoreCase')
-    if ($match.Success -and $match.Groups['Group'].Value -in $gslbServiceGroupNames) {
-        [pscustomobject]@{ Name = $match.Groups['Vserver'].Value; ServiceGroup = $match.Groups['Group'].Value; BindingLine = $line }
+    $match = [regex]::Match($line, '^\s*bind\s+gslb\s+vserver\s+(?<Vserver>\S+)', 'IgnoreCase')
+    $serviceGroupName = if ($match.Success) { Get-NetScalerOption -Line $line -Name 'serviceGroupName' } else { $null }
+    if ($match.Success -and $serviceGroupName -in $gslbServiceGroupNames) {
+        [pscustomobject]@{ Name = $match.Groups['Vserver'].Value; ServiceGroup = $serviceGroupName; BindingLine = $line }
     }
 }
 
 $gslbVservers = foreach ($binding in $gslbVserverBindings) {
-    $definitionLine = $lines | Where-Object { $_ -match "^\s*add\s+gslb\s+vserver\s+$([regex]::Escape($binding.Name))\s+" } | Select-Object -First 1
+    $definitionLine = $gslbVserverDefinitionsByName[$binding.Name]
     $definition = if ($definitionLine) { [regex]::Match($definitionLine, '^\s*add\s+gslb\s+vserver\s+(?<Name>\S+)\s+(?<ServiceType>\S+)', 'IgnoreCase') }
     [pscustomobject]@{
         Name = $binding.Name
@@ -1170,6 +1184,9 @@ foreach ($binding in $monitorBindingLines) {
     [void]$processedLines.Add($binding)
 }
 foreach ($binding in $gslbMonitorBindingLines) {
+    [void]$processedLines.Add($binding)
+}
+foreach ($binding in $gslbServiceGroupBindingLines) {
     [void]$processedLines.Add($binding)
 }
 foreach ($binding in $gslbVserverBindings) {
