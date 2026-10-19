@@ -4,7 +4,7 @@ Finds the NetScaler objects that expose a backend server.
 
 .DESCRIPTION
 Renders at most 100 rows per report section by default. Use -MaxRowsPerSection to select a lower limit.
-Discovers GSLB dependencies through both service groups and direct GSLB services that share a discovered local load-balancing vServer endpoint.
+Discovers GSLB dependencies through both service groups and direct GSLB services that share a discovered local load-balancing or content-switching vServer endpoint.
 
 .EXAMPLE
 .\Get-NetScalerServerDependency.ps1 -ConfigPath .\sample-netscaler.conf -ServerName api-app-01
@@ -101,6 +101,87 @@ function Test-NetScalerDisabled {
     param([AllowNull()][string]$State)
 
     $State -ieq 'DISABLED'
+}
+
+function Get-NetScalerContentSwitchingVservers {
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$Lines,
+
+        [Parameter(Mandatory)]
+        [string[]]$LoadBalancingVserverNames
+    )
+
+    $csActionTargets = @{}
+    $csActionLines = @{}
+    foreach ($line in $Lines) {
+        $match = [regex]::Match($line, '^\s*add\s+cs\s+action\s+(?<Action>\S+)', 'IgnoreCase')
+        $targetLBVserver = if ($match.Success) { Get-NetScalerOption -Line $line -Name 'targetLBVserver' } else { $null }
+        if ($match.Success -and $targetLBVserver -in $LoadBalancingVserverNames) {
+            $csActionTargets[$match.Groups['Action'].Value] = $targetLBVserver
+            $csActionLines[$match.Groups['Action'].Value] = $line
+        }
+    }
+
+    $csPolicyActions = @{}
+    $csPolicyLines = @{}
+    foreach ($line in $Lines) {
+        $match = [regex]::Match($line, '^\s*add\s+cs\s+policy\s+(?<Policy>\S+)', 'IgnoreCase')
+        $action = if ($match.Success) { Get-NetScalerOption -Line $line -Name 'action' } else { $null }
+        if ($match.Success -and $action -and $csActionTargets.ContainsKey($action)) {
+            $csPolicyActions[$match.Groups['Policy'].Value] = $action
+            $csPolicyLines[$match.Groups['Policy'].Value] = $line
+        }
+    }
+
+    $csVserverLines = @{}
+    foreach ($line in $Lines) {
+        $match = [regex]::Match($line, '^\s*add\s+cs\s+vserver\s+(?<Name>\S+)', 'IgnoreCase')
+        if ($match.Success) {
+            $csVserverLines[$match.Groups['Name'].Value] = $line
+        }
+    }
+
+    $contentSwitchingVservers = foreach ($line in $Lines) {
+        $match = [regex]::Match($line, '^\s*bind\s+cs\s+vserver\s+(?<Vserver>\S+)', 'IgnoreCase')
+        $policy = if ($match.Success) { Get-NetScalerOption -Line $line -Name 'policyName' } else { $null }
+        if (-not $match.Success -or -not $policy) {
+            continue
+        }
+
+        $action = $null
+        $targetLBVserver = Get-NetScalerOption -Line $line -Name 'targetLBVserver'
+        if ($csPolicyActions.ContainsKey($policy)) {
+            $action = $csPolicyActions[$policy]
+            $targetLBVserver = $csActionTargets[$action]
+        }
+
+        if ($targetLBVserver -notin $LoadBalancingVserverNames) {
+            continue
+        }
+
+        $csVserverLine = $csVserverLines[$match.Groups['Vserver'].Value]
+        $csMatch = [regex]::Match($csVserverLine, '^\s*add\s+cs\s+vserver\s+(?<Name>\S+)\s+(?<Protocol>\S+)\s+(?<Address>\S+)\s+(?<Port>\d+)', 'IgnoreCase')
+        if (-not $csMatch.Success) {
+            continue
+        }
+
+        [pscustomobject]@{
+            Name            = $match.Groups['Vserver'].Value
+            Protocol        = $csMatch.Groups['Protocol'].Value
+            Address         = $csMatch.Groups['Address'].Value
+            Port            = [int]$csMatch.Groups['Port'].Value
+            Policy          = $policy
+            Action          = $action
+            TargetLBVserver = $targetLBVserver
+            Line            = $csVserverLine
+            State           = Get-NetScalerOption -Line $csVserverLine -Name 'state'
+            IsDisabled      = Test-NetScalerDisabled (Get-NetScalerOption -Line $csVserverLine -Name 'state')
+            RawCommands     = @($csVserverLine, $line, $csPolicyLines[$policy], $csActionLines[$action])
+        }
+    }
+
+    @($contentSwitchingVservers)
 }
 
 function Add-NetScalerTextTable {
@@ -286,7 +367,7 @@ function ConvertTo-NetScalerReport {
     $report.Add('')
     $report.Add('GSLB services')
     $report.Add('-------------')
-    $report.Add('Direct global services correlated from discovered local load-balancing VIP and port pairs.')
+    $report.Add('Direct global services correlated from discovered local load-balancing or content-switching VIP and port pairs.')
     $gslbServiceRows = @($Dependency.GslbServices | ForEach-Object {
             [pscustomobject]@{
                 Name              = $_.Name
@@ -296,9 +377,11 @@ function ConvertTo-NetScalerReport {
                 PublicIp          = $_.PublicIp
                 PublicPort        = $_.PublicPort
                 LocalLBVservers   = $_.DiscoveryLoadBalancingVservers -join ', '
+                ContentSwitchingVservers = $_.DiscoveryContentSwitchingVservers -join ', '
+                GslbVservers      = $_.GslbVservers -join ', '
             }
         })
-    Add-NetScalerTextTable -Report $report -Rows $gslbServiceRows -Columns Name, ServiceType, Address, Port, PublicIp, PublicPort, LocalLBVservers -MaxRows $MaxRowsPerSection
+    Add-NetScalerTextTable -Report $report -Rows $gslbServiceRows -Columns Name, ServiceType, Address, Port, PublicIp, PublicPort, LocalLBVservers, ContentSwitchingVservers, GslbVservers -MaxRows $MaxRowsPerSection
     Add-NetScalerRawCommands -Report $report -Commands @($Dependency.GslbServices | ForEach-Object { $_.Line }) -MaxRows $MaxRowsPerSection
 
     $report.Add('')
@@ -471,7 +554,7 @@ function ConvertTo-NetScalerHtmlReport {
         param($service)
         $publicEndpoint = if ($service.PublicIp -and $service.PublicPort) { "$($service.PublicIp):$($service.PublicPort)" } elseif ($service.PublicIp) { $service.PublicIp } else { '' }
         $rowClass = if ($service.IsDisabled) { ' class="disabled"' } else { '' }
-        "<tr$rowClass><td>$(ConvertTo-HtmlText $service.Name)</td><td>$(ConvertTo-HtmlText $service.ServiceType)</td><td>$(ConvertTo-HtmlText "$($service.Address):$($service.Port)")</td><td>$(ConvertTo-HtmlText $publicEndpoint)</td><td>$(ConvertTo-HtmlText ($service.DiscoveryLoadBalancingVservers -join ', '))</td></tr>"
+        "<tr$rowClass><td>$(ConvertTo-HtmlText $service.Name)</td><td>$(ConvertTo-HtmlText $service.ServiceType)</td><td>$(ConvertTo-HtmlText "$($service.Address):$($service.Port)")</td><td>$(ConvertTo-HtmlText $publicEndpoint)</td><td>$(ConvertTo-HtmlText ($service.DiscoveryLoadBalancingVservers -join ', '))</td><td>$(ConvertTo-HtmlText ($service.DiscoveryContentSwitchingVservers -join ', '))</td><td>$(ConvertTo-HtmlText ($service.GslbVservers -join ', '))</td></tr>"
     }
     $gslbVserverRows = ConvertTo-HtmlRows -Items @($Dependency.GslbVservers) -Row {
         param($vserver)
@@ -586,8 +669,8 @@ $gslbMemberRawCommands
 <table><thead><tr><th>Name</th><th>Service type</th></tr></thead><tbody>$gslbServiceGroupRows</tbody></table>
 $gslbServiceGroupRawCommands
 <h2>GSLB services</h2>
-<p class="metadata">Direct global services correlated from discovered local load-balancing VIP and port pairs.</p>
-<table><thead><tr><th>Name</th><th>Service type</th><th>Service endpoint</th><th>Public endpoint</th><th>Local LB vServers</th></tr></thead><tbody>$gslbServiceRows</tbody></table>
+<p class="metadata">Direct global services correlated from discovered local load-balancing or content-switching VIP and port pairs.</p>
+<table><thead><tr><th>Name</th><th>Service type</th><th>Service endpoint</th><th>Public endpoint</th><th>Local LB vServers</th><th>Content-switching vServers</th><th>GSLB vServers</th></tr></thead><tbody>$gslbServiceRows</tbody></table>
 $gslbServiceRawCommands
 <h2>GSLB health monitors</h2>
 <p class="metadata">Health checks and monitor settings attached to discovered global service groups.</p>
@@ -855,6 +938,7 @@ foreach ($vserver in $lbVservers) {
 foreach ($configuration in $lbVserverConfiguration) {
     $configuration.IsDisabled = $lbVserversByName[$configuration.Vserver].IsDisabled
 }
+$contentSwitchingVservers = @(Get-NetScalerContentSwitchingVservers -Lines $lines -LoadBalancingVserverNames $lbVserverNames)
 $lbVserversByEndpoint = @{}
 foreach ($vserver in $lbVservers) {
     if ($vserver.IsNonAddressable) {
@@ -866,6 +950,14 @@ foreach ($vserver in $lbVservers) {
         $lbVserversByEndpoint[$endpointKey] = [System.Collections.Generic.List[string]]::new()
     }
     $lbVserversByEndpoint[$endpointKey].Add($vserver.Name)
+}
+$contentSwitchingVserversByEndpoint = @{}
+foreach ($vserver in $contentSwitchingVservers) {
+    $endpointKey = "$($vserver.Address)|$($vserver.Port)"
+    if (-not $contentSwitchingVserversByEndpoint.ContainsKey($endpointKey)) {
+        $contentSwitchingVserversByEndpoint[$endpointKey] = [System.Collections.Generic.List[string]]::new()
+    }
+    $contentSwitchingVserversByEndpoint[$endpointKey].Add($vserver.Name)
 }
 
 $gslbServiceGroupDiscoveries = @(
@@ -916,7 +1008,17 @@ $gslbServices = foreach ($line in $lines) {
     $match = [regex]::Match($line, '^\s*add\s+gslb\s+service\s+(?<Name>\S+)\s+(?<Address>\S+)\s+(?<ServiceType>\S+)\s+(?<Port>\d+)', 'IgnoreCase')
     if ($match.Success) {
         $endpointKey = "$($match.Groups['Address'].Value)|$([int]$match.Groups['Port'].Value)"
-        if ($lbVserversByEndpoint.ContainsKey($endpointKey)) {
+        $matchingLoadBalancingVservers = @(
+            if ($lbVserversByEndpoint.ContainsKey($endpointKey)) {
+                $lbVserversByEndpoint[$endpointKey]
+            }
+        )
+        $matchingContentSwitchingVservers = @(
+            if ($contentSwitchingVserversByEndpoint.ContainsKey($endpointKey)) {
+                $contentSwitchingVserversByEndpoint[$endpointKey]
+            }
+        )
+        if ($matchingLoadBalancingVservers.Count -gt 0 -or $matchingContentSwitchingVservers.Count -gt 0) {
             [pscustomobject]@{
                 Name                           = $match.Groups['Name'].Value
                 Address                        = $match.Groups['Address'].Value
@@ -926,7 +1028,9 @@ $gslbServices = foreach ($line in $lines) {
                 PublicPort                     = Get-NetScalerOption -Line $line -Name 'publicPort'
                 State                          = Get-NetScalerOption -Line $line -Name 'state'
                 IsDisabled                     = Test-NetScalerDisabled (Get-NetScalerOption -Line $line -Name 'state')
-                DiscoveryLoadBalancingVservers = Get-UniqueSorted @($lbVserversByEndpoint[$endpointKey])
+                DiscoveryLoadBalancingVservers = Get-UniqueSorted $matchingLoadBalancingVservers
+                DiscoveryContentSwitchingVservers = Get-UniqueSorted $matchingContentSwitchingVservers
+                GslbVservers                   = @()
                 Line                           = $line
             }
         }
@@ -970,6 +1074,17 @@ $gslbVserverBindings = foreach ($line in $lines) {
     $match = [regex]::Match($line, '^\s*bind\s+gslb\s+vserver\s+(?<Vserver>\S+)', 'IgnoreCase')
     $serviceGroupName = if ($match.Success) { Get-NetScalerOption -Line $line -Name 'serviceGroupName' } else { $null }
     $serviceName = if ($match.Success) { Get-NetScalerOption -Line $line -Name 'gslbServiceName' } else { $null }
+    if (-not $serviceName -and $match.Success) {
+        $serviceName = Get-NetScalerOption -Line $line -Name 'serviceName'
+    }
+    $positionalTarget = if ($match.Success) {
+        $positionalMatch = [regex]::Match($line, '^\s*bind\s+gslb\s+vserver\s+\S+\s+(?<Target>(?!-)\S+)', 'IgnoreCase')
+        if ($positionalMatch.Success) { $positionalMatch.Groups['Target'].Value } else { $null }
+    }
+    else {
+        $null
+    }
+
     if ($match.Success -and $serviceGroupName -in $gslbServiceGroupNames) {
         [pscustomobject]@{
             Name         = $match.Groups['Vserver'].Value
@@ -992,6 +1107,28 @@ $gslbVserverBindings = foreach ($line in $lines) {
             BindingLine  = $line
         }
     }
+    elseif ($match.Success -and $positionalTarget -in $gslbServiceGroupNames) {
+        [pscustomobject]@{
+            Name         = $match.Groups['Vserver'].Value
+            ServiceGroup = $positionalTarget
+            Service      = ''
+            BindingType  = 'Service group'
+            Target       = $positionalTarget
+            Priority     = Get-NetScalerOption -Line $line -Name 'priority'
+            BindingLine  = $line
+        }
+    }
+    elseif ($match.Success -and $positionalTarget -in $gslbServiceNames) {
+        [pscustomobject]@{
+            Name         = $match.Groups['Vserver'].Value
+            ServiceGroup = ''
+            Service      = $positionalTarget
+            BindingType  = 'Service'
+            Target       = $positionalTarget
+            Priority     = Get-NetScalerOption -Line $line -Name 'priority'
+            BindingLine  = $line
+        }
+    }
 }
 
 $gslbVservers = foreach ($binding in $gslbVserverBindings) {
@@ -1009,6 +1146,13 @@ $gslbVservers = foreach ($binding in $gslbVserverBindings) {
         State = if ($definitionLine) { Get-NetScalerOption -Line $definitionLine -Name 'state' } else { $null }
         IsDisabled = if ($definitionLine) { Test-NetScalerDisabled (Get-NetScalerOption -Line $definitionLine -Name 'state') } else { $false }
     }
+}
+foreach ($service in $gslbServices) {
+    $service.GslbVservers = Get-UniqueSorted @(
+        $gslbVservers |
+            Where-Object { $_.Service -ieq $service.Name } |
+            ForEach-Object { $_.Name }
+    )
 }
 
 $gslbVserverNames = Get-UniqueSorted @($gslbVservers | ForEach-Object { $_.Name })
@@ -1242,59 +1386,6 @@ $peerServers = @(
         }
     }
 ) | Sort-Object Name, Service, LoadBalancingVserver -Unique
-
-$csActionTargets = @{}
-$csActionLines = @{}
-foreach ($line in $lines) {
-    $match = [regex]::Match($line, '^\s*add\s+cs\s+action\s+(?<Action>\S+)\s+-targetLBVserver\s+(?<Vserver>\S+)', 'IgnoreCase')
-    if ($match.Success) {
-        $csActionTargets[$match.Groups['Action'].Value] = $match.Groups['Vserver'].Value
-        $csActionLines[$match.Groups['Action'].Value] = $line
-    }
-}
-
-$csPolicyActions = @{}
-$csPolicyLines = @{}
-foreach ($line in $lines) {
-    $match = [regex]::Match($line, '^\s*add\s+cs\s+policy\s+(?<Policy>\S+)\s+.*?-action\s+(?<Action>\S+)', 'IgnoreCase')
-    if ($match.Success -and $csActionTargets.ContainsKey($match.Groups['Action'].Value) -and $csActionTargets[$match.Groups['Action'].Value] -in $lbVserverNames) {
-        $csPolicyActions[$match.Groups['Policy'].Value] = $match.Groups['Action'].Value
-        $csPolicyLines[$match.Groups['Policy'].Value] = $line
-    }
-}
-
-$contentSwitchingVservers = foreach ($line in $lines) {
-    $match = [regex]::Match($line, '^\s*bind\s+cs\s+vserver\s+(?<Vserver>\S+)\s+-policyName\s+(?<Policy>\S+)', 'IgnoreCase')
-    if ($match.Success) {
-        $action = $null
-        $targetLBVserver = Get-NetScalerOption -Line $line -Name 'targetLBVserver'
-        if ($csPolicyActions.ContainsKey($match.Groups['Policy'].Value)) {
-            $action = $csPolicyActions[$match.Groups['Policy'].Value]
-            $targetLBVserver = $csActionTargets[$action]
-        }
-
-        if ($targetLBVserver -notin $lbVserverNames) {
-            continue
-        }
-
-        $csVserverLine = $lines | Where-Object { $_ -match "^\s*add\s+cs\s+vserver\s+$([regex]::Escape($match.Groups['Vserver'].Value))\s+" } | Select-Object -First 1
-        $csMatch = [regex]::Match($csVserverLine, '^\s*add\s+cs\s+vserver\s+(?<Name>\S+)\s+(?<Protocol>\S+)\s+(?<Address>\S+)\s+(?<Port>\d+)', 'IgnoreCase')
-
-        [pscustomobject]@{
-            Name           = $match.Groups['Vserver'].Value
-            Protocol       = $csMatch.Groups['Protocol'].Value
-            Address        = $csMatch.Groups['Address'].Value
-            Port           = [int]$csMatch.Groups['Port'].Value
-            Policy         = $match.Groups['Policy'].Value
-            Action         = $action
-            TargetLBVserver = $targetLBVserver
-            Line           = $csVserverLine
-            State          = Get-NetScalerOption -Line $csVserverLine -Name 'state'
-            IsDisabled     = Test-NetScalerDisabled (Get-NetScalerOption -Line $csVserverLine -Name 'state')
-            RawCommands    = @($csVserverLine, $line, $csPolicyLines[$match.Groups['Policy'].Value], $csActionLines[$action])
-        }
-    }
-}
 
 $vserverNames = Get-UniqueSorted @(
     $lbVservers | ForEach-Object { $_.Name }
