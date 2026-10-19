@@ -108,8 +108,8 @@ function Get-NetScalerContentSwitchingVservers {
         [Parameter(Mandatory)]
         [string[]]$Lines,
 
-        [Parameter(Mandatory)]
-        [string[]]$LoadBalancingVserverNames
+        [AllowEmptyCollection()]
+        [string[]]$LoadBalancingVserverNames = @()
     )
 
     $csActionTargets = @{}
