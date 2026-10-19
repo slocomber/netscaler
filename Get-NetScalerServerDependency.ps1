@@ -4,7 +4,7 @@ Finds the NetScaler objects that expose a backend server.
 
 .DESCRIPTION
 Renders at most 100 rows per report section by default. Use -MaxRowsPerSection to select a lower limit.
-Discovers GSLB dependencies through both service groups and direct GSLB services that share a local load-balancing vServer endpoint.
+Discovers GSLB dependencies through both service groups and direct GSLB services that share a load-balancing vServer endpoint.
 
 .EXAMPLE
 .\Get-NetScalerServerDependency.ps1 -ConfigPath .\sample-netscaler.conf -ServerName api-app-01
@@ -286,7 +286,7 @@ function ConvertTo-NetScalerReport {
     $report.Add('')
     $report.Add('GSLB services')
     $report.Add('-------------')
-    $report.Add('Direct global services correlated from discovered local load-balancing VIP and port pairs.')
+    $report.Add('Direct global services correlated from load-balancing VIP and port pairs.')
     $gslbServiceRows = @($Dependency.GslbServices | ForEach-Object {
             [pscustomobject]@{
                 Name              = $_.Name
@@ -586,7 +586,7 @@ $gslbMemberRawCommands
 <table><thead><tr><th>Name</th><th>Service type</th></tr></thead><tbody>$gslbServiceGroupRows</tbody></table>
 $gslbServiceGroupRawCommands
 <h2>GSLB services</h2>
-<p class="metadata">Direct global services correlated from discovered local load-balancing VIP and port pairs.</p>
+<p class="metadata">Direct global services correlated from load-balancing VIP and port pairs.</p>
 <table><thead><tr><th>Name</th><th>Service type</th><th>Service endpoint</th><th>Public endpoint</th><th>Local LB vServers</th></tr></thead><tbody>$gslbServiceRows</tbody></table>
 $gslbServiceRawCommands
 <h2>GSLB health monitors</h2>
@@ -868,6 +868,20 @@ foreach ($vserver in $lbVservers) {
     $lbVserversByEndpoint[$endpointKey].Add($vserver.Name)
 }
 
+$allLbVserversByEndpoint = @{}
+foreach ($line in $lines) {
+    $match = [regex]::Match($line, '^\s*add\s+lb\s+vserver\s+(?<Name>\S+)\s+(?<Protocol>\S+)\s+(?<Address>\S+)\s+(?<Port>\d+)', 'IgnoreCase')
+    if (-not $match.Success -or ($match.Groups['Address'].Value -eq '0.0.0.0' -and [int]$match.Groups['Port'].Value -eq 0)) {
+        continue
+    }
+
+    $endpointKey = "$($match.Groups['Address'].Value)|$([int]$match.Groups['Port'].Value)"
+    if (-not $allLbVserversByEndpoint.ContainsKey($endpointKey)) {
+        $allLbVserversByEndpoint[$endpointKey] = [System.Collections.Generic.List[string]]::new()
+    }
+    $allLbVserversByEndpoint[$endpointKey].Add($match.Groups['Name'].Value)
+}
+
 $gslbServiceGroupDiscoveries = @(
     foreach ($line in $lines) {
         $match = [regex]::Match($line, '^\s*bind\s+gslb\s+serviceGroup\s+(?<Group>\S+)\s+(?<Address>\S+)\s+(?<Port>\d+)', 'IgnoreCase')
@@ -916,7 +930,7 @@ $gslbServices = foreach ($line in $lines) {
     $match = [regex]::Match($line, '^\s*add\s+gslb\s+service\s+(?<Name>\S+)\s+(?<Address>\S+)\s+(?<ServiceType>\S+)\s+(?<Port>\d+)', 'IgnoreCase')
     if ($match.Success) {
         $endpointKey = "$($match.Groups['Address'].Value)|$([int]$match.Groups['Port'].Value)"
-        if ($lbVserversByEndpoint.ContainsKey($endpointKey)) {
+        if ($allLbVserversByEndpoint.ContainsKey($endpointKey)) {
             [pscustomobject]@{
                 Name                           = $match.Groups['Name'].Value
                 Address                        = $match.Groups['Address'].Value
@@ -926,7 +940,7 @@ $gslbServices = foreach ($line in $lines) {
                 PublicPort                     = Get-NetScalerOption -Line $line -Name 'publicPort'
                 State                          = Get-NetScalerOption -Line $line -Name 'state'
                 IsDisabled                     = Test-NetScalerDisabled (Get-NetScalerOption -Line $line -Name 'state')
-                DiscoveryLoadBalancingVservers = Get-UniqueSorted @($lbVserversByEndpoint[$endpointKey])
+                DiscoveryLoadBalancingVservers = Get-UniqueSorted @($allLbVserversByEndpoint[$endpointKey])
                 Line                           = $line
             }
         }
