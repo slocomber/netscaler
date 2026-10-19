@@ -166,15 +166,11 @@ function Get-NetScalerContentSwitchingVservers {
             continue
         }
 
-        $policyLine = if ($csPolicyLines.ContainsKey($policy)) { $csPolicyLines[$policy] } else { $null }
-        $actionLine = if ($action -and $csActionLines.ContainsKey($action)) { $csActionLines[$action] } else { $null }
-        $rawCommands = @(
-            foreach ($command in @($csVserverLine, $line, $policyLine, $actionLine)) {
-                if ($null -ne $command) {
-                    $command
-                }
-            }
-        )
+        $rawCommands = @($csVserverLine, $line, $csPolicyLines[$policy])
+        if ($action) {
+            $rawCommands += $csActionLines[$action]
+        }
+
         [pscustomobject]@{
             Name            = $match.Groups['Vserver'].Value
             Protocol        = $csMatch.Groups['Protocol'].Value
